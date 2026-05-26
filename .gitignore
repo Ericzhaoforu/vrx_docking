@@ -5,3 +5,11 @@ syntax: glob
 *.orig
 *.*~
 *.pyc
+
+# Local colcon workspace output.
+build/
+install/
+log/
+
+# Temporary files created by local Codex/Git tooling.
+C:*codex-git-index*

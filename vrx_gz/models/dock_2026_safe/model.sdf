@@ -1,0 +1,179 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+
+  <model name="robotx_dock_2026_safe">
+    <static>true</static>
+
+    <!-- Reuse the official 2022 three-bay dock geometry. -->
+    <include>
+      <uri>dock_2022_base</uri>
+    </include>
+
+    <!--
+      Safety indicator panels for the first safe-docking milestone.
+      bay_1 = RED, bay_2 = GREEN, bay_3 = RED.
+    -->
+    <link name="safe_indicator_panels">
+      <visual name="bay_1_back_plate">
+        <pose>5.78 3 1.85 0 0 1.5707963267948966</pose>
+        <geometry>
+          <box>
+            <size>1.5 0.08 1.1</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.02 0.02 0.02 1</ambient>
+          <diffuse>0.02 0.02 0.02 1</diffuse>
+          <specular>0.1 0.1 0.1 1</specular>
+        </material>
+      </visual>
+
+      <visual name="bay_1_red_indicator">
+        <pose>5.72 3 1.85 0 0 1.5707963267948966</pose>
+        <geometry>
+          <box>
+            <size>1.15 0.05 0.75</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0 0 1</ambient>
+          <diffuse>1 0 0 1</diffuse>
+          <specular>0.4 0.05 0.05 1</specular>
+          <emissive>0.8 0 0 1</emissive>
+        </material>
+      </visual>
+
+      <visual name="bay_2_back_plate">
+        <pose>5.78 9 1.85 0 0 1.5707963267948966</pose>
+        <geometry>
+          <box>
+            <size>1.5 0.08 1.1</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.02 0.02 0.02 1</ambient>
+          <diffuse>0.02 0.02 0.02 1</diffuse>
+          <specular>0.1 0.1 0.1 1</specular>
+        </material>
+      </visual>
+
+      <visual name="bay_2_green_indicator">
+        <pose>5.72 9 1.85 0 0 1.5707963267948966</pose>
+        <geometry>
+          <box>
+            <size>1.15 0.05 0.75</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0 1 0 1</ambient>
+          <diffuse>0 1 0 1</diffuse>
+          <specular>0.05 0.4 0.05 1</specular>
+          <emissive>0 0.8 0 1</emissive>
+        </material>
+      </visual>
+
+      <visual name="bay_3_back_plate">
+        <pose>5.78 15 1.85 0 0 1.5707963267948966</pose>
+        <geometry>
+          <box>
+            <size>1.5 0.08 1.1</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.02 0.02 0.02 1</ambient>
+          <diffuse>0.02 0.02 0.02 1</diffuse>
+          <specular>0.1 0.1 0.1 1</specular>
+        </material>
+      </visual>
+
+      <visual name="bay_3_red_indicator">
+        <pose>5.72 15 1.85 0 0 1.5707963267948966</pose>
+        <geometry>
+          <box>
+            <size>1.15 0.05 0.75</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0 0 1</ambient>
+          <diffuse>1 0 0 1</diffuse>
+          <specular>0.4 0.05 0.05 1</specular>
+          <emissive>0.8 0 0 1</emissive>
+        </material>
+      </visual>
+    </link>
+
+    <!-- Plugins to detect if the vehicle is in the different dock regions. -->
+    <plugin
+      filename="gz-sim-performer-detector-system"
+      name="gz::sim::systems::PerformerDetector">
+      <topic>/vrx/dock_2026_safe/bay_1/contain</topic>
+      <pose>1.5 3 0.25 0 0 1.5707963267948966</pose>
+      <geometry>
+        <box>
+          <size>1.5 4 2</size>
+        </box>
+      </geometry>
+    </plugin>
+
+    <plugin
+      filename="gz-sim-performer-detector-system"
+      name="gz::sim::systems::PerformerDetector">
+      <topic>/vrx/dock_2026_safe/bay_2/contain</topic>
+      <pose>1.5 9 0.25 0 0 1.5707963267948966</pose>
+      <geometry>
+        <box>
+          <size>1.5 4 2</size>
+        </box>
+      </geometry>
+    </plugin>
+
+    <plugin
+      filename="gz-sim-performer-detector-system"
+      name="gz::sim::systems::PerformerDetector">
+      <topic>/vrx/dock_2026_safe/bay_3/contain</topic>
+      <pose>1.5 15 0.25 0 0 1.5707963267948966</pose>
+      <geometry>
+        <box>
+          <size>1.5 4 2</size>
+        </box>
+      </geometry>
+    </plugin>
+
+    <plugin
+      filename="gz-sim-performer-detector-system"
+      name="gz::sim::systems::PerformerDetector">
+      <topic>/vrx/dock_2026_safe/bay_1_external/contain</topic>
+      <pose>-3.5 3 0.25 0 0 1.5707963267948966</pose>
+      <geometry>
+        <box>
+          <size>5.5 1.5 2</size>
+        </box>
+      </geometry>
+    </plugin>
+
+    <plugin
+      filename="gz-sim-performer-detector-system"
+      name="gz::sim::systems::PerformerDetector">
+      <topic>/vrx/dock_2026_safe/bay_2_external/contain</topic>
+      <pose>-3.5 9 0.25 0 0 1.5707963267948966</pose>
+      <geometry>
+        <box>
+          <size>5.5 1.5 2</size>
+        </box>
+      </geometry>
+    </plugin>
+
+    <plugin
+      filename="gz-sim-performer-detector-system"
+      name="gz::sim::systems::PerformerDetector">
+      <topic>/vrx/dock_2026_safe/bay_3_external/contain</topic>
+      <pose>-3.5 15 0.25 0 0 1.5707963267948966</pose>
+      <geometry>
+        <box>
+          <size>5.5 1.5 2</size>
+        </box>
+      </geometry>
+    </plugin>
+
+  </model>
+</sdf>

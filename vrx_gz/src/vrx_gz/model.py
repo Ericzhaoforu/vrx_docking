@@ -55,6 +55,11 @@ class Model:
         self.wavefield_size = 0
         self.payload = {}
         self.urdf = ''
+        self.xacro_args = {
+            'locked': 'true',
+            'vrx_sensors_enabled': 'true',
+            'thruster_config': 'H',
+        }
 
     def is_UAV(self):
         return self.model_type in UAVS
@@ -188,6 +193,12 @@ class Model:
         # UAV specific
         self.payload = payload
 
+    def set_xacro_args(self, xacro_args):
+        for key, value in xacro_args.items():
+            if isinstance(value, bool):
+                value = str(value).lower()
+            self.xacro_args[key] = value
+
     def set_wavefield(self, world_name):
         if world_name not in WAVEFIELD_SIZE:
             print(f'Wavefield size not found for {world_name}')
@@ -234,9 +245,8 @@ class Model:
         xacro_command = ['xacro']
         xacro_command.append(self.urdf)
         xacro_command.append(f'namespace:={self.model_name}')
-        xacro_command.append(f'locked:=true')
-        xacro_command.append(f'vrx_sensors_enabled:=true')
-        xacro_command.append(f'thruster_config:=H')
+        for name, value in self.xacro_args.items():
+            xacro_command.append(f'{name}:={value}')
         xacro_process = subprocess.Popen(xacro_command,
                                          stdout=subprocess.PIPE,
                                          stderr=subprocess.PIPE)
@@ -252,7 +262,7 @@ class Model:
             pathlib.Path(model_tmp_dir).mkdir(parents=True, exist_ok=True)
         with open(model_output_file, 'w') as f:
             f.write(urdf_str)
-        command = ['gz', 'sdf', '-p']
+        command = ['gz', 'sdf', '--force-version', '13', '-p']
         command.append(model_output_file)
         return command
 
@@ -375,5 +385,8 @@ class Model:
 
         if 'payload' in config:
             model.set_payload(config['payload'])
+
+        if 'xacro_args' in config:
+            model.set_xacro_args(config['xacro_args'])
 
         return model
