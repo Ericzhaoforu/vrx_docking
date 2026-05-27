@@ -18,8 +18,11 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.actions import IncludeLaunchDescription
+from launch.actions import TimerAction
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
@@ -28,6 +31,8 @@ def generate_launch_description():
         vrx_gz_share_dir, 'launch')
     default_config_file = os.path.join(
         vrx_gz_share_dir, 'config', 'safe_docking_wamv.yaml')
+    default_rviz_config = os.path.join(
+        vrx_gz_share_dir, 'config', 'safe_docking.rviz')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -70,6 +75,14 @@ def generate_launch_description():
             'extra_gz_args',
             default_value='',
             description='Additional arguments to pass to gz sim.'),
+        DeclareLaunchArgument(
+            'launch_rviz',
+            default_value='False',
+            description='True to launch RViz with the safe docking config.'),
+        DeclareLaunchArgument(
+            'rviz_config',
+            default_value=default_rviz_config,
+            description='RViz configuration file to load.'),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(vrx_gz_launch_dir, 'competition.launch.py')),
@@ -86,4 +99,16 @@ def generate_launch_description():
                 'competition_mode': LaunchConfiguration('competition_mode'),
                 'extra_gz_args': LaunchConfiguration('extra_gz_args'),
             }.items()),
+        TimerAction(
+            period=8.0,
+            actions=[
+                Node(
+                    package='rviz2',
+                    executable='rviz2',
+                    name='safe_docking_rviz',
+                    arguments=['-d', LaunchConfiguration('rviz_config')],
+                    parameters=[{'use_sim_time': True}],
+                    condition=IfCondition(LaunchConfiguration('launch_rviz')),
+                    output='screen'),
+            ]),
     ])
