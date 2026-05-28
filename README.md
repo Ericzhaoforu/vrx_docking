@@ -172,16 +172,22 @@ The local linear velocity can be converted into body-frame surge and sway
 velocity for hydrodynamic damping:
 
 $$
-\begin{bmatrix}
+\begin{aligned}
+\left[
+\begin{array}{c}
 u \\
 v
-\end{bmatrix}
-=
+\end{array}
+\right]
+&=
 R(\psi)^{T}
-\begin{bmatrix}
+\left[
+\begin{array}{c}
 \dot{x} \\
 \dot{y}
-\end{bmatrix}
+\end{array}
+\right]
+\end{aligned}
 $$
 
 $$
@@ -198,17 +204,23 @@ Assume two fixed aft thrusters, no lateral thruster, and symmetric spacing.
 Let `b` be the lateral distance between the two thrusters and `l = b / 2`.
 
 $$
-\begin{bmatrix}
+\begin{aligned}
+\left[
+\begin{array}{c}
 F_x \\
 F_y \\
 \tau_z
-\end{bmatrix}
-=
+\end{array}
+\right]
+&=
 B(\psi)
-\begin{bmatrix}
+\left[
+\begin{array}{c}
 T_L \\
 T_R
-\end{bmatrix}
+\end{array}
+\right]
+\end{aligned}
 $$
 
 $$
@@ -261,17 +273,21 @@ $$
 Expanded:
 
 $$
+\begin{aligned}
 F_{D,x}
-=
+&=
 -\cos\psi(d_u + d_{uu}|u|)u
 +\sin\psi(d_v + d_{vv}|v|)v
+\end{aligned}
 $$
 
 $$
+\begin{aligned}
 F_{D,y}
-=
+&=
 -\sin\psi(d_u + d_{uu}|u|)u
 -\cos\psi(d_v + d_{vv}|v|)v
+\end{aligned}
 $$
 
 Yaw damping is:
@@ -334,32 +350,38 @@ $$
 $$
 
 $$
+\begin{aligned}
 \ddot{x}
-=
+&=
 \frac{
 (T_L + T_R)\cos\psi
 -\cos\psi(d_u + d_{uu}|u|)u
 +\sin\psi(d_v + d_{vv}|v|)v
 }{m}
+\end{aligned}
 $$
 
 $$
+\begin{aligned}
 \ddot{y}
-=
+&=
 \frac{
 (T_L + T_R)\sin\psi
 -\sin\psi(d_u + d_{uu}|u|)u
 -\cos\psi(d_v + d_{vv}|v|)v
 }{m}
+\end{aligned}
 $$
 
 $$
+\begin{aligned}
 \ddot{\psi}
-=
+&=
 \frac{
 l(T_R - T_L)
 -(d_r + d_{rr}|\dot{\psi}|)\dot{\psi}
 }{I_z}
+\end{aligned}
 $$
 
 with:
@@ -375,24 +397,30 @@ $$
 The corresponding matrix form is:
 
 $$
+\begin{aligned}
 \frac{d}{dt}
-\begin{bmatrix}
+\left[
+\begin{array}{c}
 x \\
 y \\
 \psi \\
 \dot{x} \\
 \dot{y} \\
 \dot{\psi}
-\end{bmatrix}
-=
-\begin{bmatrix}
+\end{array}
+\right]
+&=
+\left[
+\begin{array}{c}
 \dot{x} \\
 \dot{y} \\
 \dot{\psi} \\
 (F_x + F_{D,x})/m \\
 (F_y + F_{D,y})/m \\
 (\tau_z + \tau_{D,z})/I_z
-\end{bmatrix}
+\end{array}
+\right]
+\end{aligned}
 $$
 
 For the current VRX WAM-V simulation, reasonable baseline parameters from the
@@ -459,21 +487,31 @@ The safe docking WAM-V GPS is mounted at `[-0.85, 0.0]` m in the body frame, so
 GPS position measurements are corrected for the yaw-dependent lever arm:
 
 $$
-r_{\mathrm{gps},B} =
-\begin{bmatrix}
-\mathrm{gps\_body\_x} & \mathrm{gps\_body\_y}
-\end{bmatrix}^{T}
+\begin{aligned}
+r_{\mathrm{gpsB}}
+&=
+\left[
+\begin{array}{c}
+x_{\mathrm{gpsBody}} \\
+y_{\mathrm{gpsBody}}
+\end{array}
+\right]
+\end{aligned}
 $$
 
 $$
+\begin{aligned}
 z_{\mathrm{base}}
-=
-z_{\mathrm{gps,delta}}
-- R(\psi)r_{\mathrm{gps},B}
-+ R(\psi_0)r_{\mathrm{gps},B}
+&=
+z_{\mathrm{gpsDelta}}
+- R(\psi)r_{\mathrm{gpsB}}
++ R(\psi_0)r_{\mathrm{gpsB}}
+\end{aligned}
 $$
 
-where `psi_0` is the first IMU yaw used by the estimator.
+where `psi_0` is the first IMU yaw used by the estimator, and
+$x_{\mathrm{gpsBody}}$, $y_{\mathrm{gpsBody}}$ are the configured
+`gps_body_x`, `gps_body_y` offsets.
 
 The EKF prediction uses body-frame IMU linear acceleration and yaw rate:
 
@@ -736,8 +774,9 @@ Waypoint 1 is an intermediate path constraint, not a controller target switch.
 The reference lookup uses a monotonic arc-length cursor:
 
 $$
+\begin{aligned}
 s_{\mathrm{ref},k}
-=
+&=
 \operatorname{arc}^{-1}
 \left(
 \max\left(
@@ -745,6 +784,7 @@ s_{\mathrm{ref},k}
 \operatorname{arc}_{\mathrm{ref},k-1}
 \right)
 \right)
+\end{aligned}
 $$
 
 This prevents the reference point from jumping backward along the path.
@@ -905,16 +945,22 @@ The EKF publishes local-frame velocity. The controller converts it to
 body-frame velocity:
 
 $$
-\begin{bmatrix}
+\begin{aligned}
+\left[
+\begin{array}{c}
 u \\
 v
-\end{bmatrix}
-=
+\end{array}
+\right]
+&=
 R(\psi)^T
-\begin{bmatrix}
+\left[
+\begin{array}{c}
 \dot{x} \\
 \dot{y}
-\end{bmatrix}
+\end{array}
+\right]
+\end{aligned}
 $$
 
 Only the surge component $u$ is controlled directly. The surge speed error is:
