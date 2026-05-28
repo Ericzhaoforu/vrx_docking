@@ -777,11 +777,11 @@ $$
 \begin{aligned}
 s_{\mathrm{ref},k}
 &=
-\operatorname{arc}^{-1}
+\mathrm{arc}^{-1}
 \left(
 \max\left(
-\operatorname{arc}_{\mathrm{closest}}+\ell_{\mathrm{lookahead}},
-\operatorname{arc}_{\mathrm{ref},k-1}
+\mathrm{arc}_{\mathrm{closest}}+\ell_{\mathrm{lookahead}},
+\mathrm{arc}_{\mathrm{ref},k-1}
 \right)
 \right)
 \end{aligned}
@@ -815,10 +815,10 @@ The controller uses a square-root proportional function for bounded approach
 speed:
 
 $$
-\operatorname{sqrtP}(e;k,a_{\max})=
+\mathrm{sqrtP}(e;k,a_{\max})=
 \begin{cases}
 ke, & |e|\le a_{\max}/k^2 \\
-\operatorname{sgn}(e)
+\mathrm{sgn}(e)
 \sqrt{2a_{\max}\left(|e|-\frac{a_{\max}}{2k^2}\right)},
 & |e|>a_{\max}/k^2
 \end{cases}
@@ -853,10 +853,10 @@ The desired body-frame surge speed is:
 
 $$
 u_{\mathrm{ref}} =
-\operatorname{sat}_{[u_{\min},u_{\max}]}
+\mathrm{sat}_{[u_{\min},u_{\max}]}
 \left(
 u_{\mathrm{path}}
-+\operatorname{sqrtP}
++\mathrm{sqrtP}
 \left(e_s;k_s,a_{s,\max}\right)
 \right)
 $$
@@ -865,18 +865,18 @@ The cross-track correction is converted into course angle, not lateral force:
 
 $$
 v_{\perp,\mathrm{cmd}} =
-\operatorname{sat}_{[-v_{\perp,\max},v_{\perp,\max}]}
+\mathrm{sat}_{[-v_{\perp,\max},v_{\perp,\max}]}
 \left(
-\operatorname{sqrtP}
+\mathrm{sqrtP}
 \left(e_y;k_y,a_{y,\max}\right)
 \right)
 $$
 
 $$
 \Delta\chi =
-\operatorname{sat}_{[-\Delta\chi_{\max},\Delta\chi_{\max}]}
+\mathrm{sat}_{[-\Delta\chi_{\max},\Delta\chi_{\max}]}
 \left(
-\operatorname{atan2}
+\mathrm{atan2}
 \left(
 v_{\perp,\mathrm{cmd}},
 \max(|u_{\mathrm{ref}}|,u_{\mathrm{guidance},\min})
@@ -889,13 +889,13 @@ yaw has priority:
 
 $$
 w_{\psi}=
-\operatorname{sat}_{[0,1]}
+\mathrm{sat}_{[0,1]}
 \left(
 \frac{d_{\mathrm{goal}}}{d_{\mathrm{blend}}}
 \right),
 \quad
 \chi_{\mathrm{cmd}}=
-\operatorname{wrap}
+\mathrm{wrap}
 \left(
 \psi_{\mathrm{ref}}+w_{\psi}\Delta\chi
 \right)
@@ -911,19 +911,19 @@ The desired yaw rate is:
 
 $$
 r_{\mathrm{ff}}=
-\operatorname{sat}_{[-r_{\mathrm{ff},\max},r_{\mathrm{ff},\max}]}
+\mathrm{sat}_{[-r_{\mathrm{ff},\max},r_{\mathrm{ff},\max}]}
 \left(
 u_{\mathrm{ref}}\kappa_{\mathrm{ref}}
 \right)
 $$
 
 $$
-e_{\psi}=\operatorname{wrap}(\psi_{\mathrm{cmd}}-\psi)
+e_{\psi}=\mathrm{wrap}(\psi_{\mathrm{cmd}}-\psi)
 $$
 
 $$
 r_{\mathrm{fb}}=
-\operatorname{sqrtP}
+\mathrm{sqrtP}
 \left(
 e_{\psi};
 k_{\psi},
@@ -933,7 +933,7 @@ $$
 
 $$
 r_{\mathrm{ref}}=
-\operatorname{sat}_{[-r_{\max},r_{\max}]}
+\mathrm{sat}_{[-r_{\max},r_{\max}]}
 \left(
 r_{\mathrm{ff}}+r_{\mathrm{fb}}
 \right)
@@ -981,7 +981,7 @@ The commanded surge force is:
 
 $$
 F_{\parallel,d} =
-\operatorname{sat}_{[-F_{\parallel,\max},F_{\parallel,\max}]}
+\mathrm{sat}_{[-F_{\parallel,\max},F_{\parallel,\max}]}
 \left(
 F_{\mathrm{drag,ff}}
 +K_{p,u}e_u
@@ -999,7 +999,7 @@ The commanded yaw moment is:
 
 $$
 \tau_d =
-\operatorname{sat}_{[-\tau_{\max},\tau_{\max}]}
+\mathrm{sat}_{[-\tau_{\max},\tau_{\max}]}
 \left(
 K_{p,r}e_r
 +K_{i,r}\int e_r\,dt
