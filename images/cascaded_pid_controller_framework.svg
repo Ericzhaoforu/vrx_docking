@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="760" viewBox="0 0 1320 760" role="img" aria-labelledby="title desc">
+  <title id="title">Cascaded PID controller framework for WAM-V safe docking</title>
+  <desc id="desc">Academic block diagram showing position sqrt-P controller, velocity PI controller, force-to-heading decoupling, yaw cascade, weighted constrained allocation, WAM-V plant, and EKF feedback.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#27364a"/>
+    </marker>
+    <style>
+      .box { fill: #f8fbff; stroke: #27364a; stroke-width: 2; rx: 10; }
+      .box2 { fill: #fffaf2; stroke: #8a5a00; stroke-width: 2; rx: 10; }
+      .box3 { fill: #f5fff7; stroke: #2e6b3f; stroke-width: 2; rx: 10; }
+      .plant { fill: #fff6f8; stroke: #8b2d45; stroke-width: 2; rx: 10; }
+      .sum { fill: #ffffff; stroke: #27364a; stroke-width: 2; }
+      .arrow { stroke: #27364a; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .thin { stroke: #5f6b7a; stroke-width: 1.6; fill: none; marker-end: url(#arrow); }
+      .feedback { stroke: #526070; stroke-width: 1.8; stroke-dasharray: 7 5; fill: none; marker-end: url(#arrow); }
+      .title { font-family: Arial, Helvetica, sans-serif; font-size: 24px; font-weight: 700; fill: #172033; }
+      .subtitle { font-family: Arial, Helvetica, sans-serif; font-size: 15px; fill: #445064; }
+      .label { font-family: Arial, Helvetica, sans-serif; font-size: 16px; font-weight: 700; fill: #172033; }
+      .small { font-family: Arial, Helvetica, sans-serif; font-size: 13px; fill: #263244; }
+      .math { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 13px; fill: #1d2735; }
+      .tiny { font-family: Arial, Helvetica, sans-serif; font-size: 11px; fill: #526070; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1320" height="760" fill="#ffffff"/>
+  <text x="660" y="38" text-anchor="middle" class="title">Cascaded PID Controller With Decoupling And Constrained Allocation</text>
+  <text x="660" y="63" text-anchor="middle" class="subtitle">Underactuated WAM-V: position error is converted into desired velocity, virtual force, desired heading, yaw torque, and left/right thrust.</text>
+
+  <!-- Main blocks -->
+  <rect class="box" x="35" y="128" width="160" height="86"/>
+  <text x="115" y="154" text-anchor="middle" class="label">Reference</text>
+  <text x="115" y="178" text-anchor="middle" class="math">p_d, psi_d</text>
+  <text x="115" y="198" text-anchor="middle" class="tiny">dock-frame target</text>
+
+  <circle class="sum" cx="250" cy="171" r="25"/>
+  <text x="250" y="176" text-anchor="middle" class="label">Σ</text>
+  <text x="232" y="152" class="small">+</text>
+  <text x="248" y="203" class="small">−</text>
+
+  <rect class="box" x="315" y="112" width="205" height="118"/>
+  <text x="417" y="139" text-anchor="middle" class="label">Position Controller</text>
+  <text x="417" y="164" text-anchor="middle" class="math">e_p = p_d - p</text>
+  <text x="417" y="185" text-anchor="middle" class="math">v_c = sqrt-P(e_p)</text>
+  <text x="417" y="206" text-anchor="middle" class="math">||v_c|| ≤ v_max</text>
+
+  <circle class="sum" cx="575" cy="171" r="25"/>
+  <text x="575" y="176" text-anchor="middle" class="label">Σ</text>
+  <text x="557" y="152" class="small">+</text>
+  <text x="573" y="203" class="small">−</text>
+
+  <rect class="box" x="640" y="112" width="205" height="118"/>
+  <text x="742" y="139" text-anchor="middle" class="label">Velocity PI</text>
+  <text x="742" y="164" text-anchor="middle" class="math">e_v = v_c - v</text>
+  <text x="742" y="185" text-anchor="middle" class="math">F_c = K_v e_v + K_i∫e_vdt</text>
+  <text x="742" y="206" text-anchor="middle" class="math">||F_c|| ≤ F_max</text>
+
+  <rect class="box2" x="905" y="100" width="250" height="142"/>
+  <text x="1030" y="128" text-anchor="middle" class="label">Decoupling Module</text>
+  <text x="1030" y="154" text-anchor="middle" class="math">psi_F = atan2(F_yc, F_xc)</text>
+  <text x="1030" y="175" text-anchor="middle" class="math">F_s = ||F_c||</text>
+  <text x="1030" y="196" text-anchor="middle" class="math">psi_c = wrap(psi_d + λ wrap(psi_F-psi_d))</text>
+  <text x="1030" y="217" text-anchor="middle" class="math">λ = sat(||e_p|| / rho_blend)</text>
+
+  <circle class="sum" cx="250" cy="390" r="25"/>
+  <text x="250" y="395" text-anchor="middle" class="label">Σ</text>
+  <text x="232" y="371" class="small">+</text>
+  <text x="248" y="422" class="small">−</text>
+
+  <rect class="box" x="315" y="336" width="205" height="108"/>
+  <text x="417" y="363" text-anchor="middle" class="label">Yaw Outer Loop</text>
+  <text x="417" y="388" text-anchor="middle" class="math">e_psi = wrap(psi_c - psi)</text>
+  <text x="417" y="409" text-anchor="middle" class="math">r_c = sat(K_psi e_psi)</text>
+  <text x="417" y="430" text-anchor="middle" class="tiny">desired yaw rate</text>
+
+  <circle class="sum" cx="575" cy="390" r="25"/>
+  <text x="575" y="395" text-anchor="middle" class="label">Σ</text>
+  <text x="557" y="371" class="small">+</text>
+  <text x="573" y="422" class="small">−</text>
+
+  <rect class="box" x="640" y="336" width="205" height="108"/>
+  <text x="742" y="363" text-anchor="middle" class="label">Yaw-Rate PI/PID</text>
+  <text x="742" y="388" text-anchor="middle" class="math">e_r = r_c - psi_dot</text>
+  <text x="742" y="409" text-anchor="middle" class="math">tau_c = K_r e_r + K_ir∫e_rdt + K_drė_r</text>
+  <text x="742" y="430" text-anchor="middle" class="math">|tau_c| ≤ tau_max</text>
+
+  <rect class="box2" x="905" y="324" width="250" height="132"/>
+  <text x="1030" y="352" text-anchor="middle" class="label">Weighted Constrained Allocation</text>
+  <text x="1030" y="378" text-anchor="middle" class="math">min_T ||W(AT - y_c)||²</text>
+  <text x="1030" y="399" text-anchor="middle" class="math">y_c = [F_s, tau_c]^T</text>
+  <text x="1030" y="420" text-anchor="middle" class="math">A = [[1,1],[-l,l]]</text>
+  <text x="1030" y="441" text-anchor="middle" class="math">T_min ≤ T_L,T_R ≤ T_max</text>
+
+  <rect class="plant" x="570" y="570" width="250" height="104"/>
+  <text x="695" y="599" text-anchor="middle" class="label">WAM-V + VRX Plant</text>
+  <text x="695" y="625" text-anchor="middle" class="math">T = [T_L, T_R]^T</text>
+  <text x="695" y="646" text-anchor="middle" class="math">x_dot = f(x,T,w)</text>
+
+  <rect class="box3" x="75" y="570" width="250" height="104"/>
+  <text x="200" y="599" text-anchor="middle" class="label">GPS / IMU EKF</text>
+  <text x="200" y="625" text-anchor="middle" class="math">x_hat = [x,y,psi,x_dot,y_dot,psi_dot]^T</text>
+  <text x="200" y="646" text-anchor="middle" class="tiny">sensor-only state estimate</text>
+
+  <!-- Arrows top path -->
+  <path class="arrow" d="M195,171 L225,171"/>
+  <path class="arrow" d="M275,171 L315,171"/>
+  <path class="arrow" d="M520,171 L550,171"/>
+  <path class="arrow" d="M600,171 L640,171"/>
+  <path class="arrow" d="M845,171 L905,171"/>
+
+  <!-- decoupling outputs -->
+  <path class="arrow" d="M1030,242 L1030,324"/>
+  <text x="1044" y="286" class="math">F_s</text>
+  <path class="arrow" d="M905,214 C760,292 430,300 275,382"/>
+  <text x="748" y="287" class="math">psi_c</text>
+
+  <!-- yaw path -->
+  <path class="arrow" d="M275,390 L315,390"/>
+  <path class="arrow" d="M520,390 L550,390"/>
+  <path class="arrow" d="M600,390 L640,390"/>
+  <path class="arrow" d="M845,390 L905,390"/>
+
+  <!-- allocation to plant -->
+  <path class="arrow" d="M1030,456 C1030,548 880,622 820,622"/>
+  <text x="991" y="535" class="math">T_L, T_R</text>
+
+  <!-- plant to estimator -->
+  <path class="thin" d="M570,622 L325,622"/>
+  <text x="420" y="604" class="tiny">GPS, IMU measurements</text>
+
+  <!-- estimator feedback -->
+  <path class="feedback" d="M200,570 C200,485 180,282 225,188"/>
+  <text x="120" y="371" class="math">p, v</text>
+  <path class="feedback" d="M325,604 C450,540 550,498 568,415"/>
+  <text x="460" y="528" class="math">psi_dot</text>
+  <path class="feedback" d="M325,642 C390,690 700,704 1170,650 C1235,642 1246,212 1155,194"/>
+  <text x="1080" y="646" class="math">p, v, psi</text>
+  <path class="feedback" d="M325,586 C353,502 222,472 240,415"/>
+  <text x="176" y="497" class="math">psi</text>
+
+  <!-- labels into summers -->
+  <text x="214" y="142" class="math">p_d</text>
+  <text x="220" y="221" class="math">p</text>
+  <text x="540" y="142" class="math">v_c</text>
+  <text x="545" y="221" class="math">v</text>
+  <text x="214" y="361" class="math">psi_c</text>
+  <text x="219" y="441" class="math">psi</text>
+  <text x="540" y="361" class="math">r_c</text>
+  <text x="535" y="441" class="math">psi_dot</text>
+
+  <text x="35" y="724" class="tiny">Notes: sqrt-P limits approach speed near the target; velocity PI produces virtual force; decoupling converts unavailable lateral force into desired yaw; weighted constrained LS handles thruster saturation.</text>
+</svg>

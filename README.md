@@ -640,6 +640,99 @@ y_dot,0.011758,0.009380,0.033439
 psi_dot,0.009176,0.007324,0.032530
 ```
 
+## Cascaded PID Controller Design
+
+The first controller should use a quadrotor-like cascaded structure, but with a
+USV-specific decoupling module. The WAM-V has only two fixed thrust inputs, so
+it cannot command arbitrary local-frame `F_x`, `F_y`, and `tau_z`
+independently. The controller therefore maps lateral position error into a
+desired yaw command, while surge force controls along-track motion.
+
+The full controller framework is shown below. The figure is committed as SVG so
+GitHub renders the equations and block diagram reliably even when Markdown math
+preview is unavailable.
+
+![Cascaded PID controller framework](images/cascaded_pid_controller_framework.svg)
+
+Recommended structure:
+
+```text
+position sqrt-P loop
+  -> desired local velocity
+velocity PI loop
+  -> virtual local force
+force-to-heading decoupling
+  -> desired surge force and desired yaw
+yaw / yaw-rate cascade
+  -> desired yaw torque
+weighted constrained allocation
+  -> left and right thruster commands
+```
+
+The position loop converts local position error into a desired velocity:
+
+```text
+e_p = p_d - p
+rho = ||e_p||
+v_mag = min(k_p * rho, sqrt(2 * a_max * rho), v_max)
+v_c = v_mag * e_p / (rho + epsilon)
+```
+
+The square-root term limits stopping distance and helps avoid overshoot near
+the dock. The velocity loop then computes a virtual local-frame force:
+
+```text
+e_v = v_c - v
+F_c = K_v * e_v + K_iv * integral(e_v dt)
+||F_c|| <= F_max
+```
+
+The decoupling module converts the virtual force into a desired heading and a
+surge force:
+
+```text
+psi_F = atan2(F_c_y, F_c_x)
+F_s = ||F_c||
+lambda = sat(||e_p|| / rho_blend, 0, 1)
+psi_c = wrap(psi_d + lambda * wrap(psi_F - psi_d))
+```
+
+Far from the dock, `psi_c` points toward the virtual force direction. Near the
+dock, `psi_c` blends toward the desired docking attitude `psi_d`.
+
+The yaw cascade is:
+
+```text
+e_psi = wrap(psi_c - psi)
+r_c = sat(K_psi * e_psi, -r_max, r_max)
+
+e_r = r_c - psi_dot
+tau_c = K_r * e_r + K_ir * integral(e_r dt) + K_dr * d(e_r)/dt
+|tau_c| <= tau_max
+```
+
+The allocation problem is:
+
+```text
+y_c = [F_s, tau_c]^T
+A = [[1, 1],
+     [-l, l]]
+
+min_T || W * (A*T - y_c) ||^2
+subject to T_min <= T_L <= T_max
+           T_min <= T_R <= T_max
+```
+
+For docking, use a larger yaw weight than surge weight when saturated:
+
+```text
+W = diag(w_F, w_tau)
+w_tau > w_F
+```
+
+This prioritizes heading alignment when the thrusters cannot satisfy both the
+surge and yaw requests exactly.
+
 ## Reference
 
 If you use the VRX simulation in your work, please cite our summary publication, [Toward Maritime Robotic Simulation in Gazebo](https://wiki.nps.edu/display/BB/Publications?preview=/1173263776/1173263778/PID6131719.pdf): 
