@@ -1,0 +1,34 @@
+gps_imu_ekf_node:
+  ros__parameters:
+    use_sim_time: true
+
+    gps_topic: /wamv/sensors/gps/gps/fix
+    imu_topic: /wamv/sensors/imu/imu/data
+    state_topic: /safe_docking/state
+    odom_topic: /safe_docking/odometry
+
+    origin_frame: safe_docking/odom
+    base_frame: wamv/wamv/base_link
+    publish_tf: false
+    gps_body_x: -0.85
+    gps_body_y: 0.0
+
+    use_imu_orientation: true
+    use_gps_velocity_measurement: true
+
+    gps_position_variance: 0.01
+    gps_velocity_variance: 0.05
+    imu_yaw_variance: 0.02
+    acceleration_noise_variance: 0.25
+    gyro_noise_variance: 0.0004
+    yaw_process_variance: 0.01
+    accel_bias_random_walk_variance: 0.0004
+    gyro_bias_random_walk_variance: 0.000001
+    unmodeled_velocity_process_variance: 0.05
+
+state_estimator_verifier:
+  ros__parameters:
+    use_sim_time: true
+    estimate_topic: /safe_docking/state
+    ground_truth_topic: /wamv/sensors/position/ground_truth_odometry
+    report_period_sec: 5.0

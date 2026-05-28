@@ -1,0 +1,11 @@
+GPS + IMU EKF performance vs debug ground truth
+samples: 4190
+duration_s: 35.196
+
+metric,rmse,mae,max_abs
+x,0.033476,0.030465,0.089608
+y,0.040380,0.031415,0.092828
+psi,0.002228,0.001464,0.007272
+x_dot,0.020328,0.017419,0.049187
+y_dot,0.011758,0.009380,0.033439
+psi_dot,0.009176,0.007324,0.032530
