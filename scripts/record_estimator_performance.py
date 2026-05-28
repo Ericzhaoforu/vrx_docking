@@ -26,7 +26,9 @@ class EstimatorRecorder(Node):
         self.output_dir = output_dir
         self.duration = duration
         self.start_time = None
-        self.truth_xy_origin = None
+        self.latest_estimate_xy = None
+        self.latest_truth_xy = None
+        self.truth_to_estimate_offset = None
         self.last_truth_pose = None
         self.estimates = []
         self.truth = []
@@ -49,6 +51,11 @@ class EstimatorRecorder(Node):
             self.start_time = now
         t = now - self.start_time
         yaw = yaw_from_quaternion(msg.pose.pose.orientation)
+        self.latest_estimate_xy = np.array([
+            msg.pose.pose.position.x,
+            msg.pose.pose.position.y,
+        ], dtype=float)
+        self.try_initialize_truth_alignment()
         self.estimates.append([
             t,
             msg.pose.pose.position.x,
@@ -66,12 +73,15 @@ class EstimatorRecorder(Node):
         t = now - self.start_time
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
-        if self.truth_xy_origin is None:
-            self.truth_xy_origin = np.array([x, y], dtype=float)
+        self.latest_truth_xy = np.array([x, y], dtype=float)
+        self.try_initialize_truth_alignment()
+        if self.truth_to_estimate_offset is None:
+            return
 
         yaw = yaw_from_quaternion(msg.pose.pose.orientation)
-        x_local = x - self.truth_xy_origin[0]
-        y_local = y - self.truth_xy_origin[1]
+        truth_local = self.latest_truth_xy + self.truth_to_estimate_offset
+        x_local = truth_local[0]
+        y_local = truth_local[1]
 
         if self.last_truth_pose is None:
             x_dot = 0.0
@@ -90,6 +100,18 @@ class EstimatorRecorder(Node):
                 psi_dot = 0.0
         self.last_truth_pose = (t, x_local, y_local, yaw)
         self.truth.append([t, x_local, y_local, yaw, x_dot, y_dot, psi_dot])
+
+    def try_initialize_truth_alignment(self):
+        if self.truth_to_estimate_offset is not None:
+            return
+        if self.latest_estimate_xy is None or self.latest_truth_xy is None:
+            return
+        self.truth_to_estimate_offset = (
+            self.latest_estimate_xy - self.latest_truth_xy)
+        self.get_logger().info(
+            'Aligned ground truth into EKF local frame with offset: '
+            f'x={self.truth_to_estimate_offset[0]:.3f} m, '
+            f'y={self.truth_to_estimate_offset[1]:.3f} m')
 
     def check_done(self):
         if self.start_time is None:

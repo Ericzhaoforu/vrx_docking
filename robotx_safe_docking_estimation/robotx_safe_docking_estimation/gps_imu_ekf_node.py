@@ -90,6 +90,9 @@ class GpsImuEkfNode(Node):
         self.declare_parameter('gps_body_y', 0.0)
         self.declare_parameter('use_imu_orientation', True)
         self.declare_parameter('use_gps_velocity_measurement', False)
+        self.declare_parameter('origin_init_duration_sec', 5.0)
+        self.declare_parameter('origin_min_samples', 20)
+        self.declare_parameter('origin_max_std_m', 0.5)
 
         self.declare_parameter('gps_position_variance', 0.25)
         self.declare_parameter('gps_velocity_variance', 0.5)
@@ -123,6 +126,12 @@ class GpsImuEkfNode(Node):
             'use_imu_orientation').get_parameter_value().bool_value
         self.use_gps_velocity_measurement = self.get_parameter(
             'use_gps_velocity_measurement').get_parameter_value().bool_value
+        self.origin_init_duration_sec = self.get_parameter(
+            'origin_init_duration_sec').get_parameter_value().double_value
+        self.origin_min_samples = self.get_parameter(
+            'origin_min_samples').get_parameter_value().integer_value
+        self.origin_max_std_m = self.get_parameter(
+            'origin_max_std_m').get_parameter_value().double_value
 
         self.gps_position_variance = self.get_parameter(
             'gps_position_variance').get_parameter_value().double_value
@@ -148,6 +157,9 @@ class GpsImuEkfNode(Node):
 
         self.local_cartesian: Optional[LocalCartesian] = None
         self.origin_fix: Optional[NavSatFix] = None
+        self.origin_samples = []
+        self.origin_start_time: Optional[float] = None
+        self.last_origin_wait_log_time = -float('inf')
         self.initial_yaw: Optional[float] = None
         self.last_predict_time: Optional[float] = None
         self.last_gps_time: Optional[float] = None
@@ -169,8 +181,8 @@ class GpsImuEkfNode(Node):
             Imu, self.imu_topic, self.on_imu, qos_profile_sensor_data)
 
         self.get_logger().info(
-            f'GPS+IMU EKF waiting for first GPS fix on {self.gps_topic}; '
-            f'IMU topic: {self.imu_topic}')
+            f'GPS+IMU EKF collecting GPS origin samples on '
+            f'{self.gps_topic}; IMU topic: {self.imu_topic}')
 
     def on_gps(self, msg: NavSatFix):
         if not self._valid_fix(msg):
@@ -181,18 +193,7 @@ class GpsImuEkfNode(Node):
             stamp = self.get_clock().now().nanoseconds * 1e-9
 
         if self.local_cartesian is None:
-            self.local_cartesian = LocalCartesian(
-                msg.latitude, msg.longitude, msg.altitude)
-            self.origin_fix = msg
-            self.x[0] = 0.0
-            self.x[1] = 0.0
-            self.last_gps_time = stamp
-            self.last_base_xy_meas = None
-            self.get_logger().info(
-                'Initialized local ENU origin from first GPS fix: '
-                f'lat={msg.latitude:.9f}, lon={msg.longitude:.9f}, '
-                f'alt={msg.altitude:.3f}')
-            self.publish_state(msg.header.stamp)
+            self._collect_origin_sample(msg, stamp)
             return
 
         gps_x, gps_y, _ = self.local_cartesian.forward(
@@ -399,6 +400,66 @@ class GpsImuEkfNode(Node):
     def _set_initial_yaw(self, yaw: float):
         if self.initial_yaw is None:
             self.initial_yaw = yaw
+
+    def _collect_origin_sample(self, msg: NavSatFix, stamp: float):
+        if self.origin_start_time is None:
+            self.origin_start_time = stamp
+            self.get_logger().info(
+                'Collecting GPS fixes to initialize averaged local ENU '
+                f'origin for {self.origin_init_duration_sec:.1f}s.')
+
+        self.origin_samples.append((
+            stamp, msg.latitude, msg.longitude, msg.altitude))
+
+        elapsed = stamp - self.origin_start_time
+        sample_count = len(self.origin_samples)
+        enough_time = elapsed >= self.origin_init_duration_sec
+        enough_samples = sample_count >= max(1, self.origin_min_samples)
+        if not (enough_time and enough_samples):
+            if stamp - self.last_origin_wait_log_time >= 2.0:
+                self.last_origin_wait_log_time = stamp
+                self.get_logger().info(
+                    'Waiting for GPS origin initialization: '
+                    f'samples={sample_count}, elapsed={elapsed:.2f}s.')
+            return
+
+        latitudes = np.array([sample[1] for sample in self.origin_samples])
+        longitudes = np.array([sample[2] for sample in self.origin_samples])
+        altitudes = np.array([sample[3] for sample in self.origin_samples])
+
+        reference = LocalCartesian(
+            self.origin_samples[0][1],
+            self.origin_samples[0][2],
+            self.origin_samples[0][3])
+        offsets = np.array([
+            reference.forward(sample[1], sample[2], sample[3])[:2]
+            for sample in self.origin_samples
+        ])
+        std_xy = float(np.sqrt(np.mean(np.var(offsets, axis=0))))
+        if std_xy > self.origin_max_std_m:
+            if stamp - self.last_origin_wait_log_time >= 2.0:
+                self.last_origin_wait_log_time = stamp
+                self.get_logger().warn(
+                    'GPS origin samples are still moving/noisy: '
+                    f'std_xy={std_xy:.3f} m > '
+                    f'{self.origin_max_std_m:.3f} m; continuing to collect.')
+            return
+
+        latitude = float(np.mean(latitudes))
+        longitude = float(np.mean(longitudes))
+        altitude = float(np.mean(altitudes))
+        self.local_cartesian = LocalCartesian(latitude, longitude, altitude)
+        self.origin_fix = msg
+        self.x[0] = 0.0
+        self.x[1] = 0.0
+        self.last_gps_time = stamp
+        self.last_base_xy_meas = None
+        self.get_logger().info(
+            'Initialized averaged local ENU origin from GPS fixes: '
+            f'samples={sample_count}, elapsed={elapsed:.2f}s, '
+            f'std_xy={std_xy:.3f} m, '
+            f'lat={latitude:.9f}, lon={longitude:.9f}, alt={altitude:.3f}')
+        self.publish_state(msg.header.stamp)
 
     def _base_position_measurement(self, gps_delta: np.ndarray,
                                    yaw: float) -> np.ndarray:

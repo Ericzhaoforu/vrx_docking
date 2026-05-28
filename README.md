@@ -111,8 +111,10 @@ launch and can leave old Gazebo / bridge processes around.
 - Added `launch_rviz:=True` and a safe docking RViz config using the active ROS
   sensor topics under `/wamv/sensors/...`.
 - Added and verified a GPS/IMU planar inertial EKF state estimator. State
-  estimation is achieved for the current simulation baseline; perception,
-  planning, and control are still intentionally not implemented.
+  estimation is achieved for the current simulation baseline.
+- Added and verified a first path-guided cascaded PID controller for the
+  two-thruster WAM-V. Perception and planning are still intentionally not
+  implemented.
 
 ## USV Dynamics Model For Safe Docking
 
@@ -396,17 +398,16 @@ $$
 For the current VRX WAM-V simulation, reasonable baseline parameters from the
 model files are:
 
-```text
-m = 180.0
-I_z = 446.0
-
-d_u = 100.0
-d_uu = 150.0
-d_v = 100.0
-d_vv = 100.0
-d_r = 800.0
-d_rr = 800.0
-```
+| Parameter | Value |
+| --- | ---: |
+| $m$ | 180.0 |
+| $I_z$ | 446.0 |
+| $d_u$ | 100.0 |
+| $d_{uu}$ | 150.0 |
+| $d_v$ | 100.0 |
+| $d_{vv}$ | 100.0 |
+| $d_r$ | 800.0 |
+| $d_{rr}$ | 800.0 |
 
 These values are suitable for first controller and estimator development, but
 payloads and fitted simulator behavior may shift the effective mass, inertia,
@@ -438,8 +439,9 @@ $$
 
 with $\dot{\psi} = \omega_{z,m} - b_{gz}$.
 
-The first valid GPS fix defines the local ENU origin. For the small VRX task
-area, GPS is converted to local meters with an equirectangular WGS84
+At startup, the estimator holds initialization while it collects a short batch
+of GPS fixes. The averaged GPS fix defines the local ENU origin. For the small
+VRX task area, GPS is converted to local meters with an equirectangular WGS84
 approximation:
 
 $$
@@ -568,6 +570,10 @@ use_gps_velocity_measurement: true
 gps_body_x: -0.85
 gps_body_y: 0.0
 
+origin_init_duration_sec: 5.0
+origin_min_samples: 20
+origin_max_std_m: 0.5
+
 gps_position_variance: 0.01
 gps_velocity_variance: 0.05
 imu_yaw_variance: 0.02
@@ -642,96 +648,484 @@ psi_dot,0.009176,0.007324,0.032530
 
 ## Cascaded PID Controller Design
 
-The first controller should use a quadrotor-like cascaded structure, but with a
-USV-specific decoupling module. The WAM-V has only two fixed thrust inputs, so
-it cannot command arbitrary local-frame `F_x`, `F_y`, and `tau_z`
-independently. The controller therefore maps lateral position error into a
-desired yaw command, while surge force controls along-track motion.
+The current controller is the path-guided cascaded PID implementation in
+`robotx_safe_docking_control`. It is intentionally underactuated: the WAM-V has
+only two fixed aft thrusters, so the controller commands body-frame surge force
+and yaw moment, not arbitrary local-frame lateral force. Lateral path error is
+handled by changing the desired course / yaw command.
 
-The full controller framework is shown below. The figure is committed as SVG so
-GitHub renders the equations and block diagram reliably even when Markdown math
-preview is unavailable.
+The controller framework is shown below. The figure is committed as SVG so the
+block diagram remains visible on GitHub even when Markdown math preview is not
+available.
 
 ![Cascaded PID controller framework](images/cascaded_pid_controller_framework.svg)
 
-Recommended structure:
+The implemented data flow is:
 
 ```text
-position sqrt-P loop
-  -> desired local velocity
-velocity PI loop
-  -> virtual local force
-force-to-heading decoupling
-  -> desired surge force and desired yaw
-yaw / yaw-rate cascade
-  -> desired yaw torque
-weighted constrained allocation
-  -> left and right thruster commands
+EKF odometry + yaw-specified waypoints
+  -> quintic Hermite path generator and curvature feasibility check
+  -> monotonic lookahead reference lookup
+  -> along-track / cross-track sqrt-P path guidance
+  -> body-frame surge PI and yaw-rate PID
+  -> weighted constrained left/right thrust allocation
+  -> WAM-V thrusters
 ```
 
-The position loop converts local position error into a desired velocity:
+### Path Generation
+
+For each path segment, the controller uses a quintic Hermite curve
+parameterized by $s \in [0, 1]$:
+
+$$
+p(s)=a_0+a_1s+a_2s^2+a_3s^3+a_4s^4+a_5s^5
+$$
+
+The endpoint constraints are:
+
+$$
+p(0)=p_0,\quad p(1)=p_f
+$$
+
+$$
+p_s(0)=d_0
+\begin{bmatrix}
+\cos\psi_0 \\
+\sin\psi_0
+\end{bmatrix},
+\quad
+p_s(1)=d_f
+\begin{bmatrix}
+\cos\psi_f \\
+\sin\psi_f
+\end{bmatrix}
+$$
+
+$$
+p_{ss}(0)=d_0^2\kappa_0
+\begin{bmatrix}
+-\sin\psi_0 \\
+\cos\psi_0
+\end{bmatrix},
+\quad
+p_{ss}(1)=0
+$$
+
+The curvature of the generated curve is:
+
+$$
+\kappa(s)=
+\frac{p_{s,x}(s)p_{ss,y}(s)-p_{s,y}(s)p_{ss,x}(s)}
+{\left\lVert p_s(s)\right\rVert^3}
+$$
+
+The current curvature feasibility pass samples the whole generated path and
+checks:
+
+$$
+\max_s |\kappa(s)| \le \kappa_{\max}
+$$
+
+If the sampled path is too sharp, the controller increases the Hermite tangent
+handle lengths and regenerates the path. If the path is still too sharp after
+the configured smoothing attempts, it keeps the least-sharp candidate and
+reports the waypoint / yaw set as infeasible. This separates path-design
+feasibility from controller tracking quality.
+
+Waypoint 1 is an intermediate path constraint, not a controller target switch.
+The reference lookup uses a monotonic arc-length cursor:
+
+$$
+s_{\mathrm{ref},k}
+=
+\operatorname{arc}^{-1}
+\left(
+\max\left(
+\operatorname{arc}_{\mathrm{closest}}+\ell_{\mathrm{lookahead}},
+\operatorname{arc}_{\mathrm{ref},k-1}
+\right)
+\right)
+$$
+
+This prevents the reference point from jumping backward along the path.
+
+### Path Guidance
+
+At the selected reference point:
+
+$$
+t_{\mathrm{ref}} =
+\frac{p_s(s_{\mathrm{ref}})}
+{\left\lVert p_s(s_{\mathrm{ref}})\right\rVert},
+\quad
+n_{\mathrm{ref}} =
+\begin{bmatrix}
+-t_{\mathrm{ref},y} \\
+t_{\mathrm{ref},x}
+\end{bmatrix}
+$$
+
+$$
+e_p=p_{\mathrm{ref}}-p,\quad
+e_s=t_{\mathrm{ref}}^T e_p,\quad
+e_y=n_{\mathrm{ref}}^T e_p
+$$
+
+The controller uses a square-root proportional function for bounded approach
+speed:
+
+$$
+\operatorname{sqrtP}(e;k,a_{\max})=
+\begin{cases}
+ke, & |e|\le a_{\max}/k^2 \\
+\operatorname{sgn}(e)
+\sqrt{2a_{\max}\left(|e|-\frac{a_{\max}}{2k^2}\right)},
+& |e|>a_{\max}/k^2
+\end{cases}
+$$
+
+The curvature and stopping-distance speed limits are:
+
+$$
+u_{\kappa} =
+\sqrt{
+\frac{a_{\mathrm{lat},\max}}
+{\max\left(|\kappa_{\mathrm{ref}}|,\epsilon_{\kappa}\right)}
+}
+$$
+
+$$
+u_{\mathrm{stop}}=
+\sqrt{2a_{\mathrm{stop},\max}d_{\mathrm{goal}}}
+$$
+
+$$
+u_{\mathrm{path}}=
+\min\left(
+u_{\mathrm{cruise}},
+u_{\kappa},
+u_{\mathrm{stop}},
+u_{\max}
+\right)
+$$
+
+The desired body-frame surge speed is:
+
+$$
+u_{\mathrm{ref}} =
+\operatorname{sat}_{[u_{\min},u_{\max}]}
+\left(
+u_{\mathrm{path}}
++\operatorname{sqrtP}
+\left(e_s;k_s,a_{s,\max}\right)
+\right)
+$$
+
+The cross-track correction is converted into course angle, not lateral force:
+
+$$
+v_{\perp,\mathrm{cmd}} =
+\operatorname{sat}_{[-v_{\perp,\max},v_{\perp,\max}]}
+\left(
+\operatorname{sqrtP}
+\left(e_y;k_y,a_{y,\max}\right)
+\right)
+$$
+
+$$
+\Delta\chi =
+\operatorname{sat}_{[-\Delta\chi_{\max},\Delta\chi_{\max}]}
+\left(
+\operatorname{atan2}
+\left(
+v_{\perp,\mathrm{cmd}},
+\max(|u_{\mathrm{ref}}|,u_{\mathrm{guidance},\min})
+\right)
+\right)
+$$
+
+Near the final waypoint, cross-track correction is faded out so the terminal
+yaw has priority:
+
+$$
+w_{\psi}=
+\operatorname{sat}_{[0,1]}
+\left(
+\frac{d_{\mathrm{goal}}}{d_{\mathrm{blend}}}
+\right),
+\quad
+\chi_{\mathrm{cmd}}=
+\operatorname{wrap}
+\left(
+\psi_{\mathrm{ref}}+w_{\psi}\Delta\chi
+\right)
+$$
+
+Sideslip compensation is disabled by default. With the default setting:
+
+$$
+\psi_{\mathrm{cmd}}=\chi_{\mathrm{cmd}}
+$$
+
+The desired yaw rate is:
+
+$$
+r_{\mathrm{ff}}=
+\operatorname{sat}_{[-r_{\mathrm{ff},\max},r_{\mathrm{ff},\max}]}
+\left(
+u_{\mathrm{ref}}\kappa_{\mathrm{ref}}
+\right)
+$$
+
+$$
+e_{\psi}=\operatorname{wrap}(\psi_{\mathrm{cmd}}-\psi)
+$$
+
+$$
+r_{\mathrm{fb}}=
+\operatorname{sqrtP}
+\left(
+e_{\psi};
+k_{\psi},
+a_{\psi,\max}
+\right)
+$$
+
+$$
+r_{\mathrm{ref}}=
+\operatorname{sat}_{[-r_{\max},r_{\max}]}
+\left(
+r_{\mathrm{ff}}+r_{\mathrm{fb}}
+\right)
+$$
+
+### Surge And Yaw Loops
+
+The EKF publishes local-frame velocity. The controller converts it to
+body-frame velocity:
+
+$$
+\begin{bmatrix}
+u \\
+v
+\end{bmatrix}
+=
+R(\psi)^T
+\begin{bmatrix}
+\dot{x} \\
+\dot{y}
+\end{bmatrix}
+$$
+
+Only the surge component $u$ is controlled directly. The surge speed error is:
+
+$$
+e_u = u_{\mathrm{ref}}-u
+$$
+
+The feed-forward drag compensation used by the implemented controller is:
+
+$$
+F_{\mathrm{drag,ff}} =
+d_{u,1}u_{\mathrm{ref}}
++d_{u,2}|u_{\mathrm{ref}}|u_{\mathrm{ref}}
+$$
+
+The commanded surge force is:
+
+$$
+F_{\parallel,d} =
+\operatorname{sat}_{[-F_{\parallel,\max},F_{\parallel,\max}]}
+\left(
+F_{\mathrm{drag,ff}}
++K_{p,u}e_u
++K_{i,u}\int e_u\,dt
+\right)
+$$
+
+The yaw-rate error is:
+
+$$
+e_r=r_{\mathrm{ref}}-\dot{\psi}
+$$
+
+The commanded yaw moment is:
+
+$$
+\tau_d =
+\operatorname{sat}_{[-\tau_{\max},\tau_{\max}]}
+\left(
+K_{p,r}e_r
++K_{i,r}\int e_r\,dt
++K_{d,r}\frac{de_r}{dt}
+\right)
+$$
+
+The integrators use anti-windup: each integral is updated only when the
+allocated thrust can approximately realize the requested surge force or yaw
+moment.
+
+### Constrained Thrust Allocation
+
+Let $l$ be the half-spacing between the two aft thrusters. The allocation
+matrix is:
+
+$$
+A=
+\begin{bmatrix}
+1 & 1 \\
+-l & l
+\end{bmatrix}
+$$
+
+$$
+y_d=
+\begin{bmatrix}
+F_{\parallel,d} \\
+\tau_d
+\end{bmatrix},
+\quad
+T=
+\begin{bmatrix}
+T_L \\
+T_R
+\end{bmatrix}
+$$
+
+The implemented weighted least-squares problem also penalizes thrust jumps:
+
+$$
+A_{\mathrm{aug}}=
+\begin{bmatrix}
+\sqrt{w_F} & \sqrt{w_F} \\
+-l\sqrt{w_{\tau}} & l\sqrt{w_{\tau}} \\
+\sqrt{w_s} & 0 \\
+0 & \sqrt{w_s}
+\end{bmatrix}
+$$
+
+$$
+b_{\mathrm{aug}}=
+\begin{bmatrix}
+\sqrt{w_F}F_{\parallel,d} \\
+\sqrt{w_{\tau}}\tau_d \\
+\sqrt{w_s}T_{L,\mathrm{prev}} \\
+\sqrt{w_s}T_{R,\mathrm{prev}}
+\end{bmatrix}
+$$
+
+$$
+T^*=
+\arg\min_T
+\left\lVert
+A_{\mathrm{aug}}T-b_{\mathrm{aug}}
+\right\rVert^2
+$$
+
+subject to:
+
+$$
+T_{\min}\le T_L\le T_{\max},
+\quad
+T_{\min}\le T_R\le T_{\max}
+$$
+
+$$
+|T_L-T_{L,\mathrm{prev}}|
+\le
+\dot{T}_{\max}\Delta t,
+\quad
+|T_R-T_{R,\mathrm{prev}}|
+\le
+\dot{T}_{\max}\Delta t
+$$
+
+The realized commands are:
+
+$$
+F_{\parallel,c}=T_L+T_R
+$$
+
+$$
+\tau_c=l(T_R-T_L)
+$$
+
+The controller uses $w_{\tau}>w_F$, so yaw alignment is prioritized when the
+two thrusters cannot satisfy surge and yaw simultaneously.
+
+### Implemented Controller
+
+Launch the controller after the safe docking simulation and estimator are
+running:
+
+```bash
+ros2 launch robotx_safe_docking_control controller.launch.py
+```
+
+It subscribes to the EKF odometry on `/safe_docking/odometry` and publishes
+direct thrust commands on:
 
 ```text
-e_p = p_d - p
-rho = ||e_p||
-v_mag = min(k_p * rho, sqrt(2 * a_max * rho), v_max)
-v_c = v_mag * e_p / (rho + epsilon)
+/wamv/thrusters/left/thrust
+/wamv/thrusters/right/thrust
 ```
 
-The square-root term limits stopping distance and helps avoid overshoot near
-the dock. The velocity loop then computes a virtual local-frame force:
+The default two-waypoint path in the estimator local frame is:
 
-```text
-e_v = v_c - v
-F_c = K_v * e_v + K_iv * integral(e_v dt)
-||F_c|| <= F_max
-```
+| Waypoint | x (m) | y (m) | yaw (rad) | Role |
+| --- | ---: | ---: | ---: | --- |
+| 1 | 4.0 | 8.0 | 1.0 | Intermediate path constraint |
+| 2 | 6.0 | 12.0 | 2.4 | Final target |
 
-The decoupling module converts the virtual force into a desired heading and a
-surge force:
+The tuned command limits are intentionally conservative for this first
+baseline:
 
-```text
-psi_F = atan2(F_c_y, F_c_x)
-F_s = ||F_c||
-lambda = sat(||e_p|| / rho_blend, 0, 1)
-psi_c = wrap(psi_d + lambda * wrap(psi_F - psi_d))
-```
+| Parameter | Value |
+| --- | ---: |
+| `u_cruise` | 0.65 m/s |
+| `u_min` | -0.25 m/s |
+| `u_max` | 0.75 m/s |
+| `F_parallel,max` | 650 N |
+| `tau_max` | 1300 N m |
+| `T_min` | -500 N |
+| `T_max` | 500 N |
+| `r_max` | 0.8 rad/s |
+| `kappa_max` | 0.7 1/m |
 
-Far from the dock, `psi_c` points toward the virtual force direction. Near the
-dock, `psi_c` blends toward the desired docking attitude `psi_d`.
+The latest headless verification used the EKF estimate for feedback and
+Gazebo ground-truth odometry only for offline scoring. The recorder aligns
+ground truth into the EKF local frame before computing target errors. Artifacts
+are saved in
+`output/controller_pid/curvature_checked_path/`.
 
-The yaw cascade is:
+The latest run used the curvature-checked two-waypoint path with final
+$\psi_d=2.4$ rad:
 
-```text
-e_psi = wrap(psi_c - psi)
-r_c = sat(K_psi * e_psi, -r_max, r_max)
+| Metric | Value |
+| --- | ---: |
+| estimate final distance | 0.191 m |
+| estimate minimum distance | 0.125 m |
+| estimate final yaw error | 0.0427 rad |
+| truth final distance | 0.174 m |
+| truth minimum distance | 0.0785 m |
+| truth final yaw error | 0.0429 rad |
+| path max absolute curvature | 1.788 1/m |
+| path curvature limit | 0.700 1/m |
+| path smoothing attempts | 2 |
+| path curvature feasible | false |
 
-e_r = r_c - psi_dot
-tau_c = K_r * e_r + K_ir * integral(e_r dt) + K_dr * d(e_r)/dt
-|tau_c| <= tau_max
-```
+The result supports our current interpretation: the controller tracks the
+generated reference well enough for a first baseline, but this waypoint / yaw
+combination violates the configured path curvature limit. That should be fixed
+by path generation or planning rather than by forcing the controller to hide a
+geometrically sharp reference.
 
-The allocation problem is:
+The controller itself does not consume ground truth.
 
-```text
-y_c = [F_s, tau_c]^T
-A = [[1, 1],
-     [-l, l]]
-
-min_T || W * (A*T - y_c) ||^2
-subject to T_min <= T_L <= T_max
-           T_min <= T_R <= T_max
-```
-
-For docking, use a larger yaw weight than surge weight when saturated:
-
-```text
-W = diag(w_F, w_tau)
-w_tau > w_F
-```
-
-This prioritizes heading alignment when the thrusters cannot satisfy both the
-surge and yaw requests exactly.
+Future safe-way planning should replace the current handle-scaling feasibility
+pass with an optimization-based spline path that directly constrains curvature,
+obstacle clearance, and smoothness. That will matter once the planner produces
+waypoints around docks, buoys, blocked water, or other vessels.
 
 ## Reference
 

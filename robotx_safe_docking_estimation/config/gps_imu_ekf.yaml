@@ -15,6 +15,9 @@ gps_imu_ekf_node:
 
     use_imu_orientation: true
     use_gps_velocity_measurement: true
+    origin_init_duration_sec: 5.0
+    origin_min_samples: 20
+    origin_max_std_m: 0.5
 
     gps_position_variance: 0.01
     gps_velocity_variance: 0.05

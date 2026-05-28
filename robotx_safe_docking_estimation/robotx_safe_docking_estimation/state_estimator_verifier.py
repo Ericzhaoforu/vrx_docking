@@ -35,7 +35,8 @@ class StateEstimatorVerifier(Node):
 
         self.latest_estimate: Optional[np.ndarray] = None
         self.latest_truth: Optional[np.ndarray] = None
-        self.truth_xy_origin: Optional[np.ndarray] = None
+        self.latest_truth_raw: Optional[np.ndarray] = None
+        self.truth_to_estimate_offset: Optional[np.ndarray] = None
         self.errors = []
 
         self.create_subscription(
@@ -52,6 +53,7 @@ class StateEstimatorVerifier(Node):
         if len(msg.data) < 6:
             return
         self.latest_estimate = np.array(msg.data[:6], dtype=float)
+        self._try_initialize_truth_alignment()
         self._sample_error()
 
     def on_ground_truth(self, msg: Odometry):
@@ -59,19 +61,27 @@ class StateEstimatorVerifier(Node):
         y = msg.pose.pose.position.y
         yaw = yaw_from_quaternion(msg.pose.pose.orientation)
         truth = np.array([x, y, yaw], dtype=float)
-        if self.truth_xy_origin is None:
-            self.truth_xy_origin = truth[:2].copy()
-            self.get_logger().info(
-                f'Ground truth origin set from {self.ground_truth_topic}: '
-                f'x={x:.3f}, y={y:.3f}, '
-                f'yaw={yaw:.3f}')
-
+        self.latest_truth_raw = truth
+        self._try_initialize_truth_alignment()
+        if self.truth_to_estimate_offset is None:
+            return
         truth_local = truth.copy()
-        truth_local[0] -= self.truth_xy_origin[0]
-        truth_local[1] -= self.truth_xy_origin[1]
+        truth_local[:2] += self.truth_to_estimate_offset
         truth_local[2] = wrap_angle(truth_local[2])
         self.latest_truth = truth_local
         self._sample_error()
+
+    def _try_initialize_truth_alignment(self):
+        if self.truth_to_estimate_offset is not None:
+            return
+        if self.latest_estimate is None or self.latest_truth_raw is None:
+            return
+        self.truth_to_estimate_offset = (
+            self.latest_estimate[:2] - self.latest_truth_raw[:2])
+        self.get_logger().info(
+            'Aligned ground truth into EKF local frame with offset: '
+            f'x={self.truth_to_estimate_offset[0]:.3f} m, '
+            f'y={self.truth_to_estimate_offset[1]:.3f} m')
 
     def _sample_error(self):
         if self.latest_estimate is None or self.latest_truth is None:

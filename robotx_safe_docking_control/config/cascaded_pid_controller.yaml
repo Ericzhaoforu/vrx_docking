@@ -1,0 +1,106 @@
+cascaded_pid_controller:
+  ros__parameters:
+    use_sim_time: true
+
+    odom_topic: /safe_docking/odometry
+    left_thrust_topic: /wamv/thrusters/left/thrust
+    right_thrust_topic: /wamv/thrusters/right/thrust
+    command_topic: /safe_docking/controller/command
+    debug_topic: /safe_docking/controller/debug
+
+    control_rate_hz: 20.0
+    command_timeout_sec: 0.5
+
+    # Final target kept for recorders and backward compatibility.
+    target_x: 6.0
+    target_y: 12.0
+    target_yaw: 2.4
+
+    # Path waypoints in the EKF local frame.  The yaw at each waypoint shapes
+    # the quintic Hermite path endpoint heading.
+    waypoint_xs: [4.0, 6.0]
+    waypoint_ys: [8.0, 12.0]
+    waypoint_yaws: [1.0, 2.4]
+    position_tolerance: 0.4
+    yaw_tolerance: 0.15
+    # Kept for compatibility; intermediate waypoints are now path constraints,
+    # not switching targets.
+    waypoint_tolerance: 0.75
+
+    # Quintic Hermite path generation and table-based lookahead.
+    min_path_handle: 1.5
+    handle_scale_start: 0.35
+    handle_scale_goal: 0.35
+    u_min_curvature: 0.2
+    kappa_max: 0.7
+    curvature_check_samples: 240
+    max_path_smoothing_iterations: 6
+    path_handle_growth: 1.45
+    max_path_handle_scale: 8.0
+    kappa_feasibility_tolerance: 1.05
+    num_path_samples: 180
+    lookahead_base: 1.2
+    lookahead_speed_gain: 1.4
+    lookahead_min: 0.8
+    lookahead_max: 3.0
+    goal_lookahead_distance: 1.2
+    replan_cross_track_threshold: 3.0
+    # Disable periodic replanning so intermediate waypoint path references stay
+    # continuous. Replanning still happens if cross-track error is excessive.
+    replan_interval_sec: 0.0
+
+    # Path guidance: along-track sqrt-P creates surge speed, cross-track
+    # sqrt-P creates course/yaw correction. No lateral force is allocated.
+    along_track_kp: 0.35
+    along_track_accel_max: 0.08
+    cross_track_kp: 0.45
+    cross_track_accel_max: 0.10
+    max_cross_track_speed: 0.45
+    max_course_correction: 0.7
+    final_heading_blend_distance: 2.0
+    u_min_guidance: 0.2
+    enable_sideslip_compensation: false
+    u_beta_min: 0.25
+    beta_max: 0.6
+
+    # Curvature/stopping-distance speed profile.
+    cruise_speed: 0.65
+    min_speed: -0.25
+    max_speed: 0.75
+    max_lateral_accel: 0.12
+    max_stopping_accel: 0.08
+    kappa_eps: 0.001
+
+    # Heading to yaw-rate layer.
+    heading_kp: 1.2
+    yaw_accel_max: 0.35
+    max_yaw_rate_ff: 0.45
+    max_yaw_rate: 0.8
+
+    # Body-frame surge speed PI loop.
+    surge_kp: 220.0
+    surge_ki: 12.0
+    surge_drag_linear: 70.0
+    surge_drag_quadratic: 140.0
+    max_surge_force: 650.0
+    surge_integral_limit: 10.0
+
+    # Yaw-rate PI loop. The output is the desired yaw moment.
+    yaw_rate_kp: 900.0
+    yaw_rate_ki: 25.0
+    yaw_rate_kd: 0.0
+    max_yaw_moment: 1300.0
+    yaw_rate_integral_limit: 2.5
+
+    # Aft H-thruster geometry and constrained least-squares allocation.
+    thruster_half_spacing: 1.027135
+    min_thrust: -500.0
+    max_thrust: 500.0
+    thrust_rate_limit: 1000.0
+    allocation_weight_force: 1.0
+    allocation_weight_torque: 3.0
+    allocation_smooth_weight: 0.03
+    surge_aw_threshold: 80.0
+    yaw_aw_threshold: 180.0
+
+    stop_when_reached: false
