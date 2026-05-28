@@ -128,107 +128,109 @@ psi: yaw angle in radians
 
 Use the local-frame state:
 
-```text
-x_state =
-[
-  x
-  y
-  psi
-  x_dot
-  y_dot
-  psi_dot
-]^T
-```
+$$
+x_{\mathrm{state}} =
+\begin{bmatrix}
+x & y & \psi & \dot{x} & \dot{y} & \dot{\psi}
+\end{bmatrix}^{T}
+$$
 
 The control input is the left and right thruster force command. In the current
 Gazebo setup these commands are published directly as thrust forces in Newtons:
 
-```text
+$$
 T =
-[
-  T_L
-  T_R
-]^T
-```
+\begin{bmatrix}
+T_L & T_R
+\end{bmatrix}^{T}
+$$
 
 ### Kinematics
 
 The first three equations are directly from the state definition:
 
-```text
-x_state_dot =
-[
-  x_dot
-  y_dot
-  psi_dot
-  x_ddot
-  y_ddot
-  psi_ddot
-]
-```
+$$
+\dot{x}_{\mathrm{state}} =
+\begin{bmatrix}
+\dot{x} & \dot{y} & \dot{\psi} & \ddot{x} & \ddot{y} & \ddot{\psi}
+\end{bmatrix}^{T}
+$$
 
 Define the body-to-local yaw rotation:
 
-```text
-R(psi) =
-[
-  cos(psi)  -sin(psi)
-  sin(psi)   cos(psi)
-]
-```
+$$
+R(\psi) =
+\begin{bmatrix}
+\cos\psi & -\sin\psi \\
+\sin\psi & \cos\psi
+\end{bmatrix}
+$$
 
 The local linear velocity can be converted into body-frame surge and sway
 velocity for hydrodynamic damping:
 
-```text
-[
-  u
-  v
-]
+$$
+\begin{bmatrix}
+u \\
+v
+\end{bmatrix}
 =
-R(psi)^T
-[
-  x_dot
-  y_dot
-]
+R(\psi)^{T}
+\begin{bmatrix}
+\dot{x} \\
+\dot{y}
+\end{bmatrix}
+$$
 
-u = x_dot * cos(psi) + y_dot * sin(psi)
-v = -x_dot * sin(psi) + y_dot * cos(psi)
-```
+$$
+u = \dot{x}\cos\psi + \dot{y}\sin\psi
+$$
+
+$$
+v = -\dot{x}\sin\psi + \dot{y}\cos\psi
+$$
 
 ### Thruster Allocation
 
 Assume two fixed aft thrusters, no lateral thruster, and symmetric spacing.
 Let `b` be the lateral distance between the two thrusters and `l = b / 2`.
 
-```text
-[
-  F_x
-  F_y
-  tau_z
-]
+$$
+\begin{bmatrix}
+F_x \\
+F_y \\
+\tau_z
+\end{bmatrix}
 =
-B(psi)
-[
-  T_L
-  T_R
-]
+B(\psi)
+\begin{bmatrix}
+T_L \\
+T_R
+\end{bmatrix}
+$$
 
-B(psi) =
-[
-  cos(psi)   cos(psi)
-  sin(psi)   sin(psi)
-     -l          l
-]
-```
+$$
+B(\psi) =
+\begin{bmatrix}
+\cos\psi & \cos\psi \\
+\sin\psi & \sin\psi \\
+-l & l
+\end{bmatrix}
+$$
 
 Therefore:
 
-```text
-F_x = (T_L + T_R) * cos(psi)
-F_y = (T_L + T_R) * sin(psi)
-tau_z = l * (T_R - T_L)
-```
+$$
+F_x = (T_L + T_R)\cos\psi
+$$
+
+$$
+F_y = (T_L + T_R)\sin\psi
+$$
+
+$$
+\tau_z = l(T_R - T_L)
+$$
 
 `F_x` and `F_y` are local-frame force components. `tau_z` is the yaw torque
 about the local up axis. Because `B(psi)` is `3 x 2`, the WAM-V with two fixed
@@ -240,136 +242,156 @@ aft thrusters is underactuated: it cannot command arbitrary `F_x`, `F_y`, and
 Hydrodynamic damping is most naturally modeled in the vessel body frame because
 water resistance depends on motion relative to the hull:
 
-```text
-F_D_body =
-[
-  -(d_u + d_uu * |u|) * u
-  -(d_v + d_vv * |v|) * v
-]
-```
+$$
+F_{D,\mathrm{body}} =
+\begin{bmatrix}
+-(d_u + d_{uu}|u|)u \\
+-(d_v + d_{vv}|v|)v
+\end{bmatrix}
+$$
 
 Rotate it back into the local frame:
 
-```text
-F_D_local = R(psi) * F_D_body
-```
+$$
+F_{D,\mathrm{local}} = R(\psi)F_{D,\mathrm{body}}
+$$
 
 Expanded:
 
-```text
-F_D_x =
-  -cos(psi) * (d_u + d_uu * |u|) * u
-  +sin(psi) * (d_v + d_vv * |v|) * v
+$$
+F_{D,x}
+=
+-\cos\psi(d_u + d_{uu}|u|)u
++\sin\psi(d_v + d_{vv}|v|)v
+$$
 
-F_D_y =
-  -sin(psi) * (d_u + d_uu * |u|) * u
-  -cos(psi) * (d_v + d_vv * |v|) * v
-```
+$$
+F_{D,y}
+=
+-\sin\psi(d_u + d_{uu}|u|)u
+-\cos\psi(d_v + d_{vv}|v|)v
+$$
 
 Yaw damping is:
 
-```text
-tau_D_z = -(d_r + d_rr * |psi_dot|) * psi_dot
-```
+$$
+\tau_{D,z} = -(d_r + d_{rr}|\dot{\psi}|)\dot{\psi}
+$$
 
 ### Rotation Simplification
 
 The body angular velocity relative to the local frame can be written as:
 
-```text
-omega_BW = p * x_b + q * y_b + r * z_b
-```
+$$
+\omega_{BW} = p\,x_b + q\,y_b + r\,z_b
+$$
 
 For planar docking:
 
-```text
-p = 0
-q = 0
-r = psi_dot
+$$
+p = 0,\quad q = 0,\quad r = \dot{\psi}
+$$
 
-omega_BW = psi_dot * z_b
-```
+$$
+\omega_{BW} = \dot{\psi}\,z_b
+$$
 
 The full rigid-body rotational equation is:
 
-```text
-tau = I * omega_dot + omega x (I * omega)
-```
+$$
+\tau = I\dot{\omega} + \omega \times (I\omega)
+$$
 
 For yaw-only motion and a body inertia tensor aligned with the principal axes,
 `omega_BW` and `I * omega_BW` are parallel, so:
 
-```text
-omega_BW x (I * omega_BW) = 0
-```
+$$
+\omega_{BW} \times (I\omega_{BW}) = 0
+$$
 
 Therefore the yaw equation reduces to:
 
-```text
-I_z * psi_ddot = tau_z + tau_D_z
-```
+$$
+I_z\ddot{\psi} = \tau_z + \tau_{D,z}
+$$
 
 ### Local-Frame Dynamics
 
 The complete dynamics are:
 
-```text
-d(x) / dt = x_dot
+$$
+\frac{dx}{dt} = \dot{x}
+$$
 
-d(y) / dt = y_dot
+$$
+\frac{dy}{dt} = \dot{y}
+$$
 
-d(psi) / dt = psi_dot
+$$
+\frac{d\psi}{dt} = \dot{\psi}
+$$
 
-x_ddot =
-[
-  (T_L + T_R) * cos(psi)
-  -cos(psi) * (d_u + d_uu * |u|) * u
-  +sin(psi) * (d_v + d_vv * |v|) * v
-] / m
+$$
+\ddot{x}
+=
+\frac{
+(T_L + T_R)\cos\psi
+-\cos\psi(d_u + d_{uu}|u|)u
++\sin\psi(d_v + d_{vv}|v|)v
+}{m}
+$$
 
-y_ddot =
-[
-  (T_L + T_R) * sin(psi)
-  -sin(psi) * (d_u + d_uu * |u|) * u
-  -cos(psi) * (d_v + d_vv * |v|) * v
-] / m
+$$
+\ddot{y}
+=
+\frac{
+(T_L + T_R)\sin\psi
+-\sin\psi(d_u + d_{uu}|u|)u
+-\cos\psi(d_v + d_{vv}|v|)v
+}{m}
+$$
 
-psi_ddot =
-[
-  l * (T_R - T_L)
-  -(d_r + d_rr * |psi_dot|) * psi_dot
-] / I_z
-```
+$$
+\ddot{\psi}
+=
+\frac{
+l(T_R - T_L)
+-(d_r + d_{rr}|\dot{\psi}|)\dot{\psi}
+}{I_z}
+$$
 
 with:
 
-```text
-u = x_dot * cos(psi) + y_dot * sin(psi)
-v = -x_dot * sin(psi) + y_dot * cos(psi)
-```
+$$
+u = \dot{x}\cos\psi + \dot{y}\sin\psi
+$$
+
+$$
+v = -\dot{x}\sin\psi + \dot{y}\cos\psi
+$$
 
 The corresponding matrix form is:
 
-```text
-d/dt
-[
-  x
-  y
-  psi
-  x_dot
-  y_dot
-  psi_dot
-]
+$$
+\frac{d}{dt}
+\begin{bmatrix}
+x \\
+y \\
+\psi \\
+\dot{x} \\
+\dot{y} \\
+\dot{\psi}
+\end{bmatrix}
 =
-[
-  x_dot
-  y_dot
-  psi_dot
-  (F_x + F_D_x) / m
-  (F_y + F_D_y) / m
-  (tau_z + tau_D_z) / I_z
-]
-```
+\begin{bmatrix}
+\dot{x} \\
+\dot{y} \\
+\dot{\psi} \\
+(F_x + F_{D,x})/m \\
+(F_y + F_{D,y})/m \\
+(\tau_z + \tau_{D,z})/I_z
+\end{bmatrix}
+$$
 
 For the current VRX WAM-V simulation, reasonable baseline parameters from the
 model files are:
@@ -397,45 +419,36 @@ The initial state estimator lives in `robotx_safe_docking_estimation`. It uses a
 planar inertial EKF with GPS position updates and IMU yaw as a compass / AHRS
 placeholder. The internal EKF state is:
 
-```text
-x_ekf =
-[
-  x
-  y
-  psi
-  x_dot
-  y_dot
-  b_ax
-  b_ay
-  b_gz
-]^T
-```
+$$
+x_{\mathrm{ekf}} =
+\begin{bmatrix}
+x & y & \psi & \dot{x} & \dot{y} & b_{ax} & b_{ay} & b_{gz}
+\end{bmatrix}^{T}
+$$
 
 where `b_ax` and `b_ay` are body-frame accelerometer biases and `b_gz` is the
 gyro-z bias. The published controller-facing state is:
 
-```text
-x_pub =
-[
-  x
-  y
-  psi
-  x_dot
-  y_dot
-  psi_dot
-]^T
-```
+$$
+x_{\mathrm{pub}} =
+\begin{bmatrix}
+x & y & \psi & \dot{x} & \dot{y} & \dot{\psi}
+\end{bmatrix}^{T}
+$$
 
-with `psi_dot = omega_z,m - b_gz`.
+with $\dot{\psi} = \omega_{z,m} - b_{gz}$.
 
 The first valid GPS fix defines the local ENU origin. For the small VRX task
 area, GPS is converted to local meters with an equirectangular WGS84
 approximation:
 
-```text
-x = (lon - lon_0) * cos(lat_0) * R_e
-y = (lat - lat_0) * R_e
-```
+$$
+x = (\mathrm{lon} - \mathrm{lon}_0)\cos(\mathrm{lat}_0)R_e
+$$
+
+$$
+y = (\mathrm{lat} - \mathrm{lat}_0)R_e
+$$
 
 where `R_e = 6378137.0 m`.
 
@@ -443,70 +456,108 @@ The estimator publishes the WAM-V reference point, not the GPS antenna point.
 The safe docking WAM-V GPS is mounted at `[-0.85, 0.0]` m in the body frame, so
 GPS position measurements are corrected for the yaw-dependent lever arm:
 
-```text
-r_gps_B = [gps_body_x, gps_body_y]^T
-z_base = z_gps_delta - R(psi) * r_gps_B + R(psi_0) * r_gps_B
-```
+$$
+r_{\mathrm{gps},B} =
+\begin{bmatrix}
+\mathrm{gps\_body\_x} & \mathrm{gps\_body\_y}
+\end{bmatrix}^{T}
+$$
+
+$$
+z_{\mathrm{base}}
+=
+z_{\mathrm{gps,delta}}
+- R(\psi)r_{\mathrm{gps},B}
++ R(\psi_0)r_{\mathrm{gps},B}
+$$
 
 where `psi_0` is the first IMU yaw used by the estimator.
 
 The EKF prediction uses body-frame IMU linear acceleration and yaw rate:
 
-```text
+$$
 a_B =
-[
-  a_x,m - b_ax
-  a_y,m - b_ay
-]
+\begin{bmatrix}
+a_{x,m} - b_{ax} \\
+a_{y,m} - b_{ay}
+\end{bmatrix}
+$$
 
-R(psi)
-=
-[
-  cos(psi)  -sin(psi)
-  sin(psi)   cos(psi)
-]
+$$
+R(\psi) =
+\begin{bmatrix}
+\cos\psi & -\sin\psi \\
+\sin\psi & \cos\psi
+\end{bmatrix}
+$$
 
-a_W = R(psi) * a_B
-omega = omega_z,m - b_gz
+$$
+a_W = R(\psi)a_B
+$$
 
-x_k+1 = x_k + x_dot_k * dt + 0.5 * a_W,x * dt^2
-y_k+1 = y_k + y_dot_k * dt + 0.5 * a_W,y * dt^2
-psi_k+1 = wrap(psi_k + omega * dt)
-x_dot_k+1 = x_dot_k + a_W,x * dt
-y_dot_k+1 = y_dot_k + a_W,y * dt
-b_ax,k+1 = b_ax,k
-b_ay,k+1 = b_ay,k
-b_gz,k+1 = b_gz,k
-```
+$$
+\omega = \omega_{z,m} - b_{gz}
+$$
+
+$$
+x_{k+1} = x_k + \dot{x}_k\Delta t + \frac{1}{2}a_{W,x}\Delta t^2
+$$
+
+$$
+y_{k+1} = y_k + \dot{y}_k\Delta t + \frac{1}{2}a_{W,y}\Delta t^2
+$$
+
+$$
+\psi_{k+1} = \mathrm{wrap}(\psi_k + \omega\Delta t)
+$$
+
+$$
+\dot{x}_{k+1} = \dot{x}_k + a_{W,x}\Delta t
+$$
+
+$$
+\dot{y}_{k+1} = \dot{y}_k + a_{W,y}\Delta t
+$$
+
+$$
+b_{ax,k+1} = b_{ax,k},\quad
+b_{ay,k+1} = b_{ay,k},\quad
+b_{gz,k+1} = b_{gz,k}
+$$
 
 GPS measurement update:
 
-```text
-z_gps =
-[
-  x_gps
-  y_gps
-]
+$$
+z_{\mathrm{gps}} =
+\begin{bmatrix}
+x_{\mathrm{gps}} \\
+y_{\mathrm{gps}}
+\end{bmatrix}
+$$
 
-h_gps(x_state) =
-[
-  x
-  y
-]
-```
+$$
+h_{\mathrm{gps}}(x_{\mathrm{ekf}}) =
+\begin{bmatrix}
+x \\
+y
+\end{bmatrix}
+$$
 
 IMU yaw measurement update. In simulation this comes from
 `sensor_msgs/msg/Imu.orientation`; in the real system it is intended to stand in
 for a future compass, AHRS, INS, or dual-RTK heading source:
 
-```text
-z_imu_yaw = psi_imu
-h_imu_yaw(x_ekf) = psi
-```
+$$
+z_{\mathrm{imu,yaw}} = \psi_{\mathrm{imu}}
+$$
+
+$$
+h_{\mathrm{imu,yaw}}(x_{\mathrm{ekf}}) = \psi
+$$
 
 The gyro-z value is not double-counted as a separate measurement in the current
 filter. It is used as the prediction input, and the published yaw rate is
-`psi_dot = omega_z,m - b_gz`.
+$\dot{\psi} = \omega_{z,m} - b_{gz}$.
 
 Current EKF parameters are:
 
