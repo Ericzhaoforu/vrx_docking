@@ -19,7 +19,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'params_file',
             default_value=default_params,
-            description='Parameter file for the cascaded PID controller.'),
+            description='Parameter file for the trajectory tracker.'),
         DeclareLaunchArgument(
             'use_sim_time',
             default_value='True',

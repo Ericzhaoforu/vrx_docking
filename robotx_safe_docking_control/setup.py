@@ -24,12 +24,13 @@ setup(
     zip_safe=True,
     maintainer='zjy',
     maintainer_email='zjy@example.com',
-    description='Cascaded PID controllers for the safe docking WAM-V autonomy stack.',
+    description='Trajectory tracking controllers for the safe docking WAM-V autonomy stack.',
     license='Apache License 2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'cascaded_pid_controller = robotx_safe_docking_control.cascaded_pid_controller:main',
+            'flatness_mpc_controller = robotx_safe_docking_control.flatness_mpc_controller:main',
         ],
     },
 )

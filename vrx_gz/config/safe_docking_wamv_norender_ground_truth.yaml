@@ -1,0 +1,16 @@
+model_name: wamv
+model_type: wam-v
+position:
+  xyz: [-532, 162, 0]
+  rpy: [0, 0, 1]
+xacro_args:
+  locked: true
+  vrx_sensors_enabled: false
+  camera_enabled: false
+  gps_enabled: true
+  imu_enabled: true
+  lidar_enabled: false
+  ground_truth_enabled: true
+  pinger_enabled: false
+  ball_shooter_enabled: false
+  thruster_config: H

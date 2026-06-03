@@ -63,26 +63,35 @@ class ControllerRecorder(Node):
 
     def on_debug(self, msg: Float64MultiArray):
         data = list(msg.data)
-        if len(data) < 32:
+        if len(data) < 40:
             return
         self.latest_debug = {
-            'desired_yaw': float(data[9]),
-            'desired_yaw_rate': float(data[10]),
-            'waypoint_index': float(data[18]),
+            'x_d': float(data[9]),
+            'y_d': float(data[10]),
+            'psi_d': float(data[11]),
+            'u_d': float(data[12]),
+            'r_d': float(data[13]),
+            'u_cmd': float(data[14]),
+            'r_cmd': float(data[15]),
+            'e_x': float(data[16]),
+            'e_y': float(data[17]),
+            'e_psi': float(data[18]),
             's_ref': float(data[19]),
-            'x_ref': float(data[20]),
-            'y_ref': float(data[21]),
-            'psi_ref': float(data[22]),
-            'kappa_ref': float(data[23]),
-            'e_s': float(data[24]),
-            'e_y': float(data[25]),
-            'u_ref': float(data[26]),
-            'surge_speed': float(data[27]),
-            'surge_force_c': float(data[28]),
-            'tau_c': float(data[29]),
-            'path_max_abs_kappa': float(data[32]) if len(data) > 32 else float('nan'),
-            'path_smoothing_attempts': float(data[33]) if len(data) > 33 else float('nan'),
-            'path_curvature_feasible': float(data[34]) if len(data) > 34 else float('nan'),
+            'arc_ref': float(data[20]),
+            'kappa_ref': float(data[21]),
+            'trajectory_u_limit': float(data[22]),
+            'trajectory_curvature_limit': float(data[23]),
+            'trajectory_yaw_rate_limit': float(data[24]),
+            'surge_speed': float(data[25]),
+            'force': float(data[26]),
+            'torque': float(data[27]),
+            'surge_force_c': float(data[30]),
+            'tau_c': float(data[31]),
+            'allocation_cost': float(data[32]),
+            'path_max_abs_kappa': float(data[33]),
+            'path_curvature_feasible': float(data[34]),
+            'trajectory_valid': float(data[35]),
+            'waypoint_index': float(data[39]),
         }
 
     def on_estimate(self, msg: Odometry):
@@ -132,28 +141,38 @@ class ControllerRecorder(Node):
         ], yaw))
 
     def make_sample(self, base_sample, yaw: float):
-        desired_yaw = self.latest_debug.get('desired_yaw', float('nan'))
-        psi_ref = self.latest_debug.get('psi_ref', float('nan'))
+        psi_d = self.latest_debug.get('psi_d', float('nan'))
         sample = list(base_sample)
         sample.extend([
             self.latest_debug.get('waypoint_index', float('nan')),
-            desired_yaw,
-            self.latest_debug.get('desired_yaw_rate', float('nan')),
-            self.latest_debug.get('s_ref', float('nan')),
-            self.latest_debug.get('x_ref', float('nan')),
-            self.latest_debug.get('y_ref', float('nan')),
-            psi_ref,
-            self._yaw_error_or_nan(psi_ref, yaw),
-            self._yaw_error_or_nan(desired_yaw, yaw),
-            self.latest_debug.get('e_s', float('nan')),
+            self.latest_debug.get('x_d', float('nan')),
+            self.latest_debug.get('y_d', float('nan')),
+            psi_d,
+            self._yaw_error_or_nan(psi_d, yaw),
+            self.latest_debug.get('u_d', float('nan')),
+            self.latest_debug.get('r_d', float('nan')),
+            self.latest_debug.get('u_cmd', float('nan')),
+            self.latest_debug.get('r_cmd', float('nan')),
+            self.latest_debug.get('e_x', float('nan')),
             self.latest_debug.get('e_y', float('nan')),
-            self.latest_debug.get('u_ref', float('nan')),
+            self.latest_debug.get('e_psi', float('nan')),
+            self.latest_debug.get('s_ref', float('nan')),
+            self.latest_debug.get('arc_ref', float('nan')),
+            self.latest_debug.get('kappa_ref', float('nan')),
+            self.latest_debug.get('trajectory_u_limit', float('nan')),
+            self.latest_debug.get(
+                'trajectory_curvature_limit', float('nan')),
+            self.latest_debug.get(
+                'trajectory_yaw_rate_limit', float('nan')),
             self.latest_debug.get('surge_speed', float('nan')),
+            self.latest_debug.get('force', float('nan')),
+            self.latest_debug.get('torque', float('nan')),
             self.latest_debug.get('surge_force_c', float('nan')),
             self.latest_debug.get('tau_c', float('nan')),
+            self.latest_debug.get('allocation_cost', float('nan')),
             self.latest_debug.get('path_max_abs_kappa', float('nan')),
-            self.latest_debug.get('path_smoothing_attempts', float('nan')),
             self.latest_debug.get('path_curvature_feasible', float('nan')),
+            self.latest_debug.get('trajectory_valid', float('nan')),
         ])
         return sample
 
@@ -195,13 +214,13 @@ class ControllerRecorder(Node):
                 't', 'source', 'x', 'y', 'yaw', 'x_dot', 'y_dot',
                 'yaw_rate', 'speed', 'distance', 'yaw_error',
                 'left_thrust', 'right_thrust',
-                'waypoint_index', 'desired_yaw', 'desired_yaw_rate',
-                's_ref', 'x_ref', 'y_ref', 'psi_ref',
-                'path_yaw_error', 'command_yaw_error',
-                'along_track_error', 'cross_track_error',
-                'u_ref', 'surge_speed', 'surge_force_c', 'tau_c',
-                'path_max_abs_kappa', 'path_smoothing_attempts',
-                'path_curvature_feasible',
+                'waypoint_index', 'x_d', 'y_d', 'psi_d', 'psi_error',
+                'u_d', 'r_d', 'u_cmd', 'r_cmd', 'e_x', 'e_y', 'e_psi',
+                's_ref', 'arc_ref', 'kappa_ref', 'trajectory_u_limit',
+                'trajectory_curvature_limit', 'trajectory_yaw_rate_limit',
+                'surge_speed', 'force', 'torque', 'surge_force_c', 'tau_c',
+                'allocation_cost', 'path_max_abs_kappa',
+                'path_curvature_feasible', 'trajectory_valid',
             ])
             writer.writerows(self.samples)
 
@@ -256,7 +275,7 @@ class ControllerRecorder(Node):
         ax.grid(True, alpha=0.3)
         ax.legend(loc='best')
 
-        fig.suptitle('Safe Docking Cascaded PID Controller Performance')
+        fig.suptitle('Safe Docking Trajectory Tracker Performance')
         fig.tight_layout()
         fig.savefig(self.output_dir / 'controller_performance.png', dpi=160)
         plt.close(fig)
@@ -266,7 +285,7 @@ class ControllerRecorder(Node):
         truth = self.data_for('truth')
         summary_path = self.output_dir / 'controller_performance_summary.txt'
         with summary_path.open('w') as f:
-            f.write('Cascaded PID controller performance\n')
+            f.write('Trajectory tracker performance\n')
             f.write(f'target_x,{self.target[0]:.6f}\n')
             f.write(f'target_y,{self.target[1]:.6f}\n')
             f.write(f'target_yaw,{self.target_yaw:.6f}\n')
@@ -296,7 +315,7 @@ def main():
     parser.add_argument('--duration', type=float, default=80.0)
     parser.add_argument('--target-x', type=float, default=6.0)
     parser.add_argument('--target-y', type=float, default=12.0)
-    parser.add_argument('--target-yaw', type=float, default=1.0)
+    parser.add_argument('--target-yaw', type=float, default=2.4)
     args = parser.parse_args()
 
     rclpy.init()

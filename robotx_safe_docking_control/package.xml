@@ -2,7 +2,7 @@
 <package format="3">
   <name>robotx_safe_docking_control</name>
   <version>0.1.0</version>
-  <description>Cascaded PID controllers for the safe docking WAM-V autonomy stack.</description>
+  <description>Trajectory tracking controllers for the safe docking WAM-V autonomy stack.</description>
 
   <maintainer email="zjy@example.com">zjy</maintainer>
   <license>Apache License 2.0</license>
@@ -10,6 +10,7 @@
   <buildtool_depend>ament_python</buildtool_depend>
 
   <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>std_msgs</exec_depend>
 

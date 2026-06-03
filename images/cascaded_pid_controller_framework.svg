@@ -1,150 +1,116 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="900" viewBox="0 0 1500 900" role="img" aria-labelledby="title desc">
-  <title id="title">Path-guided cascaded PID controller architecture for WAM-V safe docking</title>
-  <desc id="desc">Block diagram of the implemented controller: EKF odometry and yaw-specified waypoints feed a quintic Hermite path generator plus curvature feasibility check plus monotonic lookahead plus path guidance plus surge speed PI loop plus yaw-rate PID loop plus constrained left-right thrust allocation plus WAM-V plant plus GPS and IMU sensors plus EKF feedback.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="820" viewBox="0 0 1500 820" role="img" aria-labelledby="title desc">
+  <title id="title">B-spline trajectory tracker architecture for WAM-V safe docking</title>
+  <desc id="desc">Block diagram of the implemented controller: EKF odometry and waypoints feed a SciPy B-spline optimizer, arc-length speed profiler, nonlinear body-frame trajectory tracker, surge PI loop, yaw-rate PID loop, constrained thrust allocation, WAM-V plant, GPS and IMU sensors, and EKF feedback.</desc>
   <defs>
     <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
-      <path d="M2,2 L10,6 L2,10 Z" fill="#233044"/>
-    </marker>
-    <marker id="arrow-blue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
-      <path d="M2,2 L10,6 L2,10 Z" fill="#1d5d8c"/>
-    </marker>
-    <marker id="arrow-green" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
-      <path d="M2,2 L10,6 L2,10 Z" fill="#287344"/>
+      <path d="M2,2 L10,6 L2,10 Z" fill="#243044"/>
     </marker>
     <style>
       .bg { fill: #ffffff; }
-      .lane { fill: #f7f9fc; stroke: #d7dee8; stroke-width: 1.4; }
-      .input { fill: #eef6ff; stroke: #1d5d8c; stroke-width: 2.2; }
-      .path { fill: #f2fbf4; stroke: #287344; stroke-width: 2.2; }
-      .guidance { fill: #fff8e8; stroke: #9a6a00; stroke-width: 2.2; }
+      .lane { fill: #f7f9fc; stroke: #d8e0ea; stroke-width: 1.5; }
+      .input { fill: #edf6ff; stroke: #23689b; stroke-width: 2.2; }
+      .traj { fill: #eefaf3; stroke: #287344; stroke-width: 2.2; }
+      .track { fill: #fff8e8; stroke: #9a6a00; stroke-width: 2.2; }
       .loop { fill: #f7f2ff; stroke: #6947a8; stroke-width: 2.2; }
       .alloc { fill: #fff1f4; stroke: #9b3150; stroke-width: 2.2; }
       .plant { fill: #f4f4f5; stroke: #4a5568; stroke-width: 2.2; }
       .sensor { fill: #eefaf8; stroke: #16756b; stroke-width: 2.2; }
-      .arrow { stroke: #233044; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
-      .arrowBlue { stroke: #1d5d8c; stroke-width: 2.4; fill: none; marker-end: url(#arrow-blue); }
-      .arrowGreen { stroke: #287344; stroke-width: 2.4; fill: none; marker-end: url(#arrow-green); }
-      .feedback { stroke: #526174; stroke-width: 2.1; stroke-dasharray: 8 6; fill: none; marker-end: url(#arrow); }
-      .title { font-family: Arial; font-size: 25px; font-weight: 700; fill: #172033; }
-      .subtitle { font-family: Arial; font-size: 15px; fill: #506075; }
-      .laneTitle { font-family: Arial; font-size: 15px; font-weight: 700; fill: #526174; letter-spacing: 0.4px; }
-      .label { font-family: Arial; font-size: 17px; font-weight: 700; fill: #172033; }
-      .small { font-family: Arial; font-size: 13px; fill: #263244; }
-      .tiny { font-family: Arial; font-size: 11px; fill: #536174; }
+      .arrow { stroke: #243044; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      .feedback { stroke: #526174; stroke-width: 2.2; stroke-dasharray: 8 6; fill: none; marker-end: url(#arrow); }
+      .title { font-family: Arial, sans-serif; font-size: 26px; font-weight: 700; fill: #172033; }
+      .subtitle { font-family: Arial, sans-serif; font-size: 15px; fill: #506075; }
+      .laneTitle { font-family: Arial, sans-serif; font-size: 15px; font-weight: 700; fill: #526174; }
+      .label { font-family: Arial, sans-serif; font-size: 17px; font-weight: 700; fill: #172033; }
+      .small { font-family: Arial, sans-serif; font-size: 13px; fill: #263244; }
       .math { font-family: monospace; font-size: 12px; fill: #1c2736; }
-      .pill { fill: #ffffff; stroke: #c8d1dc; stroke-width: 1.2; }
     </style>
   </defs>
 
-  <rect class="bg" x="0" y="0" width="1500" height="900"/>
-  <text x="750" y="38" text-anchor="middle" class="title">Path-Guided Cascaded PID Controller For Two-Thruster WAM-V Docking</text>
-  <text x="750" y="64" text-anchor="middle" class="subtitle">Lateral error is converted to desired course / yaw; only surge force and yaw moment are allocated to left and right thrust.</text>
+  <rect class="bg" x="0" y="0" width="1500" height="820"/>
+  <text x="750" y="38" text-anchor="middle" class="title">B-Spline Trajectory Tracker For Two-Thruster WAM-V Docking</text>
+  <text x="750" y="64" text-anchor="middle" class="subtitle">A single nonlinear tracker replaces the previous course guidance; only surge force and yaw moment are allocated.</text>
 
-  <rect class="lane" x="28" y="88" width="1444" height="260" rx="12"/>
-  <text x="52" y="116" class="laneTitle">REFERENCE GENERATION</text>
-  <rect class="lane" x="28" y="374" width="1444" height="230" rx="12"/>
-  <text x="52" y="402" class="laneTitle">CASCADES AND ALLOCATION</text>
-  <rect class="lane" x="28" y="630" width="1444" height="220" rx="12"/>
-  <text x="52" y="658" class="laneTitle">PLANT SENSORS AND ESTIMATION FEEDBACK</text>
+  <rect class="lane" x="28" y="92" width="1444" height="220" rx="10"/>
+  <text x="52" y="120" class="laneTitle">TRAJECTORY GENERATION</text>
+  <rect class="lane" x="28" y="344" width="1444" height="220" rx="10"/>
+  <text x="52" y="372" class="laneTitle">TRACKING, INNER LOOPS, AND ALLOCATION</text>
+  <rect class="lane" x="28" y="596" width="1444" height="172" rx="10"/>
+  <text x="52" y="624" class="laneTitle">PLANT, SENSORS, AND ESTIMATION FEEDBACK</text>
 
-  <rect class="input" x="58" y="145" width="210" height="122" rx="10"/>
-  <text x="163" y="174" text-anchor="middle" class="label">Inputs</text>
-  <text x="163" y="199" text-anchor="middle" class="math">waypoints: p_i and psi_i</text>
-  <text x="163" y="220" text-anchor="middle" class="math">EKF odom: p v psi r</text>
-  <text x="163" y="244" text-anchor="middle" class="tiny">no Gazebo ground truth</text>
+  <rect class="input" x="60" y="145" width="210" height="112" rx="10"/>
+  <text x="165" y="174" text-anchor="middle" class="label">Inputs</text>
+  <text x="165" y="199" text-anchor="middle" class="math">waypoints p_i, psi_i</text>
+  <text x="165" y="221" text-anchor="middle" class="math">EKF odom p, v, psi, r</text>
+  <text x="165" y="243" text-anchor="middle" class="small">no autonomy ground truth</text>
 
-  <rect class="path" x="318" y="118" width="265" height="175" rx="10"/>
-  <text x="450" y="147" text-anchor="middle" class="label">Quintic Hermite Path</text>
-  <text x="450" y="172" text-anchor="middle" class="math">p(s) psi_ref(s) kappa(s)</text>
-  <text x="450" y="194" text-anchor="middle" class="math">endpoint yaw constraints</text>
-  <text x="450" y="220" text-anchor="middle" class="math">max |kappa| &lt;= kappa_max</text>
-  <text x="450" y="244" text-anchor="middle" class="math">grow handles if too sharp</text>
-  <text x="450" y="270" text-anchor="middle" class="tiny">reports infeasible path when needed</text>
+  <rect class="traj" x="325" y="130" width="260" height="142" rx="10"/>
+  <text x="455" y="159" text-anchor="middle" class="label">SciPy B-Spline Optimizer</text>
+  <text x="455" y="184" text-anchor="middle" class="math">p(s), psi_d(s), kappa(s)</text>
+  <text x="455" y="207" text-anchor="middle" class="math">waypoint and yaw constraints</text>
+  <text x="455" y="230" text-anchor="middle" class="math">sampled |kappa| &lt;= kappa_max</text>
+  <text x="455" y="253" text-anchor="middle" class="small">failure publishes zero thrust</text>
 
-  <rect class="path" x="635" y="138" width="230" height="136" rx="10"/>
-  <text x="750" y="167" text-anchor="middle" class="label">Monotonic Lookahead</text>
-  <text x="750" y="193" text-anchor="middle" class="math">arc_ref never decreases</text>
-  <text x="750" y="216" text-anchor="middle" class="math">s_ref = arc^{-1}(arc_ref)</text>
-  <text x="750" y="241" text-anchor="middle" class="tiny">prevents backward reference jumps</text>
+  <rect class="traj" x="645" y="130" width="260" height="142" rx="10"/>
+  <text x="775" y="159" text-anchor="middle" class="label">Arc-Length Speed Profile</text>
+  <text x="775" y="184" text-anchor="middle" class="math">u_d(s) from speed limits</text>
+  <text x="775" y="207" text-anchor="middle" class="math">accel / brake passes</text>
+  <text x="775" y="230" text-anchor="middle" class="math">r_d = u_d kappa</text>
+  <text x="775" y="253" text-anchor="middle" class="small">terminal speed forced to zero</text>
 
-  <rect class="guidance" x="918" y="118" width="290" height="175" rx="10"/>
-  <text x="1063" y="147" text-anchor="middle" class="label">Path Guidance</text>
-  <text x="1063" y="172" text-anchor="middle" class="math">e_s = t_ref^T (p_ref - p)</text>
-  <text x="1063" y="194" text-anchor="middle" class="math">e_y = n_ref^T (p_ref - p)</text>
-  <text x="1063" y="220" text-anchor="middle" class="math">u_ref = sat(u_path + sqrtP(e_s))</text>
-  <text x="1063" y="244" text-anchor="middle" class="math">psi_cmd = psi_ref + course correction</text>
-  <text x="1063" y="270" text-anchor="middle" class="math">r_ref = sat(u_ref*kappa_ref + sqrtP(e_psi))</text>
+  <rect class="traj" x="965" y="130" width="260" height="142" rx="10"/>
+  <text x="1095" y="159" text-anchor="middle" class="label">Monotonic Reference</text>
+  <text x="1095" y="184" text-anchor="middle" class="math">arc_ref = closest + lead</text>
+  <text x="1095" y="207" text-anchor="middle" class="math">arc_ref never decreases</text>
+  <text x="1095" y="230" text-anchor="middle" class="math">x_d, y_d, psi_d, u_d, r_d</text>
+  <text x="1095" y="253" text-anchor="middle" class="small">no waypoint target switch</text>
 
-  <rect class="pill" x="1265" y="148" width="165" height="116" rx="58"/>
-  <text x="1348" y="180" text-anchor="middle" class="label">No Lateral</text>
-  <text x="1348" y="203" text-anchor="middle" class="label">Force</text>
-  <text x="1348" y="229" text-anchor="middle" class="tiny">cross-track error</text>
-  <text x="1348" y="246" text-anchor="middle" class="tiny">bends course only</text>
+  <rect class="track" x="130" y="398" width="292" height="126" rx="10"/>
+  <text x="276" y="427" text-anchor="middle" class="label">Body-Frame Tracker</text>
+  <text x="276" y="452" text-anchor="middle" class="math">e_B = R(psi)^T (p_d - p)</text>
+  <text x="276" y="475" text-anchor="middle" class="math">u_cmd = u_d cos(e_psi) + k_x e_x</text>
+  <text x="276" y="498" text-anchor="middle" class="math">r_cmd = r_d + k_y u_eff e_y + k_psi sin(e_psi)</text>
 
-  <rect class="loop" x="470" y="428" width="245" height="125" rx="10"/>
-  <text x="592" y="457" text-anchor="middle" class="label">Surge Speed PI</text>
-  <text x="592" y="482" text-anchor="middle" class="math">u = [cos psi  sin psi] v</text>
-  <text x="592" y="505" text-anchor="middle" class="math">e_u = u_ref - u</text>
-  <text x="592" y="529" text-anchor="middle" class="math">F_parallel_d = drag_ff + PI</text>
+  <rect class="loop" x="500" y="398" width="225" height="126" rx="10"/>
+  <text x="612" y="427" text-anchor="middle" class="label">Surge PI</text>
+  <text x="612" y="452" text-anchor="middle" class="math">e_u = u_cmd - u</text>
+  <text x="612" y="475" text-anchor="middle" class="math">drag feedforward</text>
+  <text x="612" y="498" text-anchor="middle" class="math">u_cmd -> F_x</text>
 
-  <rect class="loop" x="785" y="428" width="245" height="125" rx="10"/>
-  <text x="907" y="457" text-anchor="middle" class="label">Yaw-Rate PID</text>
-  <text x="907" y="482" text-anchor="middle" class="math">e_r = r_ref - psi_dot</text>
-  <text x="907" y="506" text-anchor="middle" class="math">tau_d = PID(e_r)</text>
-  <text x="907" y="529" text-anchor="middle" class="math">|tau_d| &lt;= tau_max</text>
+  <rect class="loop" x="790" y="398" width="225" height="126" rx="10"/>
+  <text x="902" y="427" text-anchor="middle" class="label">Yaw-Rate PID</text>
+  <text x="902" y="452" text-anchor="middle" class="math">e_r = r_cmd - psi_dot</text>
+  <text x="902" y="475" text-anchor="middle" class="math">rate feedback</text>
+  <text x="902" y="498" text-anchor="middle" class="math">r_cmd -> tau_z</text>
 
-  <rect class="alloc" x="1112" y="410" width="270" height="160" rx="10"/>
-  <text x="1247" y="439" text-anchor="middle" class="label">Constrained Allocation</text>
-  <text x="1247" y="465" text-anchor="middle" class="math">min ||A_aug T - b_aug||^2</text>
-  <text x="1247" y="488" text-anchor="middle" class="math">T = [T_L  T_R]^T</text>
-  <text x="1247" y="511" text-anchor="middle" class="math">F_c = T_L + T_R</text>
-  <text x="1247" y="534" text-anchor="middle" class="math">tau_c = l(T_R - T_L)</text>
-  <text x="1247" y="555" text-anchor="middle" class="tiny">thrust and rate saturation</text>
+  <rect class="alloc" x="1080" y="386" width="285" height="150" rx="10"/>
+  <text x="1222" y="415" text-anchor="middle" class="label">Constrained Allocation</text>
+  <text x="1222" y="440" text-anchor="middle" class="math">min ||A_aug T - b_aug||^2</text>
+  <text x="1222" y="463" text-anchor="middle" class="math">T = [T_L, T_R]^T</text>
+  <text x="1222" y="486" text-anchor="middle" class="math">F_c = T_L + T_R</text>
+  <text x="1222" y="509" text-anchor="middle" class="math">tau_c = l(T_R - T_L)</text>
 
-  <rect class="plant" x="1112" y="690" width="270" height="112" rx="10"/>
-  <text x="1247" y="719" text-anchor="middle" class="label">WAM-V + VRX Plant</text>
-  <text x="1247" y="744" text-anchor="middle" class="math">commands: T_L and T_R</text>
-  <text x="1247" y="767" text-anchor="middle" class="math">state evolves in Gazebo</text>
-  <text x="1247" y="790" text-anchor="middle" class="tiny">simulation plant only</text>
+  <rect class="plant" x="1080" y="648" width="285" height="82" rx="10"/>
+  <text x="1222" y="677" text-anchor="middle" class="label">WAM-V + VRX Plant</text>
+  <text x="1222" y="702" text-anchor="middle" class="math">direct left/right thrust commands</text>
 
-  <rect class="sensor" x="650" y="690" width="245" height="112" rx="10"/>
-  <text x="772" y="719" text-anchor="middle" class="label">GPS / IMU Sensors</text>
-  <text x="772" y="744" text-anchor="middle" class="math">NavSatFix and Imu</text>
-  <text x="772" y="767" text-anchor="middle" class="tiny">noisy sensor topics</text>
-  <text x="772" y="790" text-anchor="middle" class="tiny">ground truth used only offline</text>
+  <rect class="sensor" x="650" y="648" width="245" height="82" rx="10"/>
+  <text x="772" y="677" text-anchor="middle" class="label">GPS / IMU Sensors</text>
+  <text x="772" y="702" text-anchor="middle" class="math">NavSatFix and Imu</text>
 
-  <rect class="sensor" x="230" y="690" width="255" height="112" rx="10"/>
-  <text x="358" y="719" text-anchor="middle" class="label">GPS / IMU EKF</text>
-  <text x="358" y="744" text-anchor="middle" class="math">x_hat = [x y psi xdot ydot psidot]</text>
-  <text x="358" y="767" text-anchor="middle" class="math">/safe_docking/odometry</text>
-  <text x="358" y="790" text-anchor="middle" class="tiny">feedback to controller</text>
+  <rect class="sensor" x="250" y="648" width="250" height="82" rx="10"/>
+  <text x="375" y="677" text-anchor="middle" class="label">GPS / IMU EKF</text>
+  <text x="375" y="702" text-anchor="middle" class="math">/safe_docking/odometry</text>
 
-  <path class="arrowBlue" d="M268,206 L318,206"/>
-  <path class="arrowGreen" d="M583,206 L635,206"/>
-  <path class="arrowGreen" d="M865,206 L918,206"/>
-  <path class="arrow" d="M1208,206 L1265,206"/>
-
-  <path class="arrow" d="M1063,293 C1063,348 921,366 908,428"/>
-  <text x="965" y="363" class="math">r_ref</text>
-  <path class="arrow" d="M1004,293 C1004,362 611,355 593,428"/>
-  <text x="707" y="362" class="math">u_ref</text>
-
-  <path class="arrow" d="M715,526 C780,590 1020,590 1112,538"/>
-  <text x="875" y="585" class="math">F_parallel_d</text>
-  <path class="arrow" d="M1030,491 L1112,516"/>
-  <text x="1042" y="484" class="math">tau_d</text>
-
-  <path class="arrow" d="M1247,570 L1247,690"/>
-  <text x="1261" y="633" class="math">T_L and T_R</text>
-
-  <path class="arrow" d="M1112,746 L895,746"/>
-  <text x="986" y="727" class="tiny">sensor generation</text>
-  <path class="arrow" d="M650,746 L485,746"/>
-  <text x="548" y="727" class="tiny">measurements</text>
-
-  <path class="feedback" d="M358,690 C358,620 212,540 163,267"/>
-  <text x="146" y="500" class="math">p v psi r</text>
-  <path class="feedback" d="M485,707 C642,616 782,585 907,553"/>
-  <text x="660" y="620" class="math">psi_dot</text>
-  <text x="48" y="872" class="tiny">Notes: the controller consumes EKF odometry only. Gazebo ground truth is reserved for offline scoring. The current sharp waypoint/yaw pair is treated as a path feasibility issue rather than a controller-side failure.</text>
+  <path class="arrow" d="M270 201 H325"/>
+  <path class="arrow" d="M585 201 H645"/>
+  <path class="arrow" d="M905 201 H965"/>
+  <path class="arrow" d="M1095 272 V334 H276 V398"/>
+  <path class="arrow" d="M422 461 H500"/>
+  <path class="arrow" d="M725 461 H790"/>
+  <path class="arrow" d="M1015 461 H1080"/>
+  <path class="arrow" d="M1222 536 V648"/>
+  <path class="arrow" d="M1080 690 H895"/>
+  <path class="arrow" d="M650 690 H500"/>
+  <path class="feedback" d="M250 690 H110 V201 H60"/>
+  <path class="feedback" d="M375 648 V560 H276 V524"/>
 </svg>
