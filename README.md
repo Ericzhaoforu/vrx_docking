@@ -1052,25 +1052,29 @@ PYTHONPATH=/home/zjy/vrx_docking/robotx_safe_docking_control \
 ```
 
 Headless Gazebo / VRX verification was run with the no-render WAM-V config and
-recorder-only ground truth odometry. The `figure8` row comes from
-`output/dynamics_rk4_mpc_tau_v_tight005_figure8_20260604/`; the other rows are
-from `output/nmpc_rk4_tight005_all_refs_20260604/`.
+recorder-only ground truth odometry. Before each scenario the test harness
+explicitly stops ROS launch processes, Gazebo, bridges, the EKF, the controller,
+the recorder, and the ROS 2 daemon. This avoids stale EKF / simulator
+publishers contaminating the plots.
+
+The clean rerun artifacts are saved under
+`output/nmpc_rk4_tight005_all_refs_clean_rerun_20260604/`.
 
 | Reference | Truth final dist (m) | Truth final yaw (rad) | Truth final speed (m/s) | RMS ref dist (m) | Max abs tau_v (N) | Saturation frac | Solver success |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| hold | 0.0158 | 0.00043 | 0.0142 | 0.0171 | 0.0307 | 0.000 | 1.000 |
-| straight | 1.9498 | 0.0124 | 0.1796 | 0.7867 | 0.0500 | 0.000 | 1.000 |
-| arc | 5.6625 | 0.0795 | 0.4385 | 3.3703 | 0.0500 | 0.220 | 1.000 |
-| stop | 7.9474 | 0.0186 | 0.0064 | 8.1261 | 0.0500 | 0.954 | 1.000 |
-| spiral | 7.5579 | 2.7928 | 0.0095 | 6.7805 | 0.0500 | 0.014 | 0.997 |
-| yaw | 1.1975 | 0.1239 | 0.0277 | 4.0621 | 0.0500 | 0.000 | 1.000 |
-| figure8 | 0.0275 | 0.00045 | 0.0125 | 0.2130 | 0.0398 | 0.003 | 1.000 |
+| hold | 0.0428 | 0.00345 | 0.0052 | 0.0321 | 0.0298 | 0.000 | 1.000 |
+| straight | 0.0122 | 0.00016 | 0.0110 | 0.1824 | 0.0154 | 0.000 | 1.000 |
+| arc | 0.0439 | 0.00190 | 0.0165 | 0.1230 | 0.0311 | 0.000 | 1.000 |
+| stop | 0.0202 | 0.00230 | 0.0118 | 0.1220 | 0.0294 | 0.001 | 1.000 |
+| spiral | 0.0448 | 0.00077 | 0.0047 | 0.2161 | 0.0358 | 0.001 | 1.000 |
+| yaw | 0.0727 | 0.01022 | 0.0222 | 0.1008 | 0.0353 | 0.006 | 1.000 |
+| figure8 | 0.0239 | 0.00045 | 0.0091 | 0.2078 | 0.0442 | 0.003 | 1.000 |
 
-The result is intentionally not marked as fully reliable. The controller holds
-position and tracks the figure-eight well, while several nominally feasible
-references still expose large terminal errors, high thrust saturation, or poor
-yaw convergence. The tight lateral-force condition works numerically: all
-recorded runs have zero `tau_v` constraint violation and `|tau_v| <= 0.05 N`.
+The clean nominal synthetic-reference runs are successful. The tight
+lateral-force condition works numerically: all recorded runs have zero `tau_v`
+constraint violation and `|tau_v| <= 0.05 N`. Earlier runs that showed large
+terminal errors were traced to stale processes / topic state between tests, not
+the NMPC formulation.
 
 ### Work Since The Previous Commit
 
@@ -1085,18 +1089,20 @@ recorded runs have zero `tau_v` constraint violation and `|tau_v| <= 0.05 N`.
 ### Next Controller Improvements
 
 The most urgent issue is not `tau_v` feasibility; that part is working. The
-weakness is tracking authority and terminal behavior across references. The
-next iterations should:
+weakness is now validation hygiene and robustness beyond nominal clean starts.
+The next iterations should:
 
 1. Revisit reference speed profiles against the `+-100 N` actuator limits.
-2. Add reference feasibility diagnostics that predict saturation before launch.
-3. Improve terminal logic with a docking/hold phase that remains inside the
-same NMPC formulation instead of relying on a separate PID fallback.
-4. Investigate solver status `2` from acados and tune scaling / globalization
+2. Keep the strict cleanup / fresh EKF-origin workflow for every closed-loop
+   test.
+3. Add reference feasibility diagnostics that predict saturation before launch.
+4. Improve terminal logic with a docking/hold phase that remains inside the
+   same NMPC formulation instead of relying on a separate PID fallback.
+5. Investigate solver status `2` from acados and tune scaling / globalization
    so successful closed-loop behavior also has cleaner solver convergence.
-5. Test with wind/current, initial pose offsets, and estimator noise before
+6. Test with wind/current, initial pose offsets, and estimator noise before
    calling the controller robust.
-6. Later, replace the synthetic references with a MINCO or obstacle-aware
+7. Later, replace the synthetic references with a MINCO or obstacle-aware
    spline planner that directly optimizes curvature, clearance, and actuator
    feasibility.
 
