@@ -133,48 +133,48 @@ psi: yaw angle in radians
 
 Use the local-frame state:
 
-$$
+```math
 x_{\mathrm{state}} =
 \begin{bmatrix}
 x & y & \psi & \dot{x} & \dot{y} & \dot{\psi}
 \end{bmatrix}^{T}
-$$
+```
 
 The control input is the left and right thruster force command. In the current
 Gazebo setup these commands are published directly as thrust forces in Newtons:
 
-$$
+```math
 T =
 \begin{bmatrix}
 T_L & T_R
 \end{bmatrix}^{T}
-$$
+```
 
 ### Kinematics
 
 The first three equations are directly from the state definition:
 
-$$
+```math
 \dot{x}_{\mathrm{state}} =
 \begin{bmatrix}
 \dot{x} & \dot{y} & \dot{\psi} & \ddot{x} & \ddot{y} & \ddot{\psi}
 \end{bmatrix}^{T}
-$$
+```
 
 Define the body-to-local yaw rotation:
 
-$$
+```math
 R(\psi) =
 \begin{bmatrix}
 \cos\psi & -\sin\psi \\
 \sin\psi & \cos\psi
 \end{bmatrix}
-$$
+```
 
 The local linear velocity can be converted into body-frame surge and sway
 velocity for hydrodynamic damping:
 
-$$
+```math
 \begin{aligned}
 \left[
 \begin{array}{c}
@@ -191,22 +191,22 @@ R(\psi)^{T}
 \end{array}
 \right]
 \end{aligned}
-$$
+```
 
-$$
+```math
 u = \dot{x}\cos\psi + \dot{y}\sin\psi
-$$
+```
 
-$$
+```math
 v = -\dot{x}\sin\psi + \dot{y}\cos\psi
-$$
+```
 
 ### Thruster Allocation
 
 Assume two fixed aft thrusters, no lateral thruster, and symmetric spacing.
 Let `b` be the lateral distance between the two thrusters and `l = b / 2`.
 
-$$
+```math
 \begin{aligned}
 \left[
 \begin{array}{c}
@@ -224,30 +224,30 @@ T_R
 \end{array}
 \right]
 \end{aligned}
-$$
+```
 
-$$
+```math
 B(\psi) =
 \begin{bmatrix}
 \cos\psi & \cos\psi \\
 \sin\psi & \sin\psi \\
 -l & l
 \end{bmatrix}
-$$
+```
 
 Therefore:
 
-$$
+```math
 F_x = (T_L + T_R)\cos\psi
-$$
+```
 
-$$
+```math
 F_y = (T_L + T_R)\sin\psi
-$$
+```
 
-$$
+```math
 \tau_z = l(T_R - T_L)
-$$
+```
 
 `F_x` and `F_y` are local-frame force components. `tau_z` is the yaw torque
 about the local up axis. Because `B(psi)` is `3 x 2`, the WAM-V with two fixed
@@ -259,100 +259,100 @@ aft thrusters is underactuated: it cannot command arbitrary `F_x`, `F_y`, and
 Hydrodynamic damping is most naturally modeled in the vessel body frame because
 water resistance depends on motion relative to the hull:
 
-$$
+```math
 F_{D,\mathrm{body}} =
 \begin{bmatrix}
 -(d_u + d_{uu}|u|)u \\
 -(d_v + d_{vv}|v|)v
 \end{bmatrix}
-$$
+```
 
 Rotate it back into the local frame:
 
-$$
+```math
 F_{D,\mathrm{local}} = R(\psi)F_{D,\mathrm{body}}
-$$
+```
 
 Expanded:
 
-$$
+```math
 \begin{aligned}
 F_{D,x}
 &=
 -\cos\psi(d_u + d_{uu}|u|)u
 +\sin\psi(d_v + d_{vv}|v|)v
 \end{aligned}
-$$
+```
 
-$$
+```math
 \begin{aligned}
 F_{D,y}
 &=
 -\sin\psi(d_u + d_{uu}|u|)u
 -\cos\psi(d_v + d_{vv}|v|)v
 \end{aligned}
-$$
+```
 
 Yaw damping is:
 
-$$
+```math
 \tau_{D,z} = -(d_r + d_{rr}|\dot{\psi}|)\dot{\psi}
-$$
+```
 
 ### Rotation Simplification
 
 The body angular velocity relative to the local frame can be written as:
 
-$$
+```math
 \omega_{BW} = p\,x_b + q\,y_b + r\,z_b
-$$
+```
 
 For planar docking:
 
-$$
+```math
 p = 0,\quad q = 0,\quad r = \dot{\psi}
-$$
+```
 
-$$
+```math
 \omega_{BW} = \dot{\psi}\,z_b
-$$
+```
 
 The full rigid-body rotational equation is:
 
-$$
+```math
 \tau = I\dot{\omega} + \omega \times (I\omega)
-$$
+```
 
 For yaw-only motion and a body inertia tensor aligned with the principal axes,
 `omega_BW` and `I * omega_BW` are parallel, so:
 
-$$
+```math
 \omega_{BW} \times (I\omega_{BW}) = 0
-$$
+```
 
 Therefore the yaw equation reduces to:
 
-$$
+```math
 I_z\ddot{\psi} = \tau_z + \tau_{D,z}
-$$
+```
 
 ### Local-Frame Dynamics
 
 The complete dynamics are:
 
-$$
+```math
 \frac{dx}{dt} = \dot{x}
-$$
+```
 
-$$
+```math
 \frac{dy}{dt} = \dot{y}
-$$
+```
 
-$$
+```math
 \frac{d\psi}{dt} = \dot{\psi}
-$$
+```
 
-$$
+```math
 \begin{aligned}
 \ddot{x}
 &=
@@ -362,9 +362,9 @@ $$
 +\sin\psi(d_v + d_{vv}|v|)v
 }{m}
 \end{aligned}
-$$
+```
 
-$$
+```math
 \begin{aligned}
 \ddot{y}
 &=
@@ -374,9 +374,9 @@ $$
 -\cos\psi(d_v + d_{vv}|v|)v
 }{m}
 \end{aligned}
-$$
+```
 
-$$
+```math
 \begin{aligned}
 \ddot{\psi}
 &=
@@ -385,21 +385,21 @@ l(T_R - T_L)
 -(d_r + d_{rr}|\dot{\psi}|)\dot{\psi}
 }{I_z}
 \end{aligned}
-$$
+```
 
 with:
 
-$$
+```math
 u = \dot{x}\cos\psi + \dot{y}\sin\psi
-$$
+```
 
-$$
+```math
 v = -\dot{x}\sin\psi + \dot{y}\cos\psi
-$$
+```
 
 The corresponding matrix form is:
 
-$$
+```math
 \begin{aligned}
 \frac{d}{dt}
 \left[
@@ -424,7 +424,7 @@ y \\
 \end{array}
 \right]
 \end{aligned}
-$$
+```
 
 For the current VRX WAM-V simulation, reasonable baseline parameters from the
 model files are:
@@ -451,22 +451,22 @@ The initial state estimator lives in `robotx_safe_docking_estimation`. It uses a
 planar inertial EKF with GPS position updates and IMU yaw as a compass / AHRS
 placeholder. The internal EKF state is:
 
-$$
+```math
 x_{\mathrm{ekf}} =
 \begin{bmatrix}
 x & y & \psi & \dot{x} & \dot{y} & b_{ax} & b_{ay} & b_{gz}
 \end{bmatrix}^{T}
-$$
+```
 
 where `b_ax` and `b_ay` are body-frame accelerometer biases and `b_gz` is the
 gyro-z bias. The published controller-facing state is:
 
-$$
+```math
 x_{\mathrm{pub}} =
 \begin{bmatrix}
 x & y & \psi & \dot{x} & \dot{y} & \dot{\psi}
 \end{bmatrix}^{T}
-$$
+```
 
 with $\dot{\psi} = \omega_{z,m} - b_{gz}$.
 
@@ -475,13 +475,13 @@ of GPS fixes. The averaged GPS fix defines the local ENU origin. For the small
 VRX task area, GPS is converted to local meters with an equirectangular WGS84
 approximation:
 
-$$
+```math
 x = (\mathrm{lon} - \mathrm{lon}_0)\cos(\mathrm{lat}_0)R_e
-$$
+```
 
-$$
+```math
 y = (\mathrm{lat} - \mathrm{lat}_0)R_e
-$$
+```
 
 where `R_e = 6378137.0 m`.
 
@@ -489,7 +489,7 @@ The estimator publishes the WAM-V reference point, not the GPS antenna point.
 The safe docking WAM-V GPS is mounted at `[-0.85, 0.0]` m in the body frame, so
 GPS position measurements are corrected for the yaw-dependent lever arm:
 
-$$
+```math
 \begin{aligned}
 r_{\mathrm{gpsB}}
 &=
@@ -500,9 +500,9 @@ y_{\mathrm{gpsBody}}
 \end{array}
 \right]
 \end{aligned}
-$$
+```
 
-$$
+```math
 \begin{aligned}
 z_{\mathrm{base}}
 &=
@@ -510,7 +510,7 @@ z_{\mathrm{gpsDelta}}
 - R(\psi)r_{\mathrm{gpsB}}
 + R(\psi_0)r_{\mathrm{gpsB}}
 \end{aligned}
-$$
+```
 
 where `psi_0` is the first IMU yaw used by the estimator, and
 $x_{\mathrm{gpsBody}}$, $y_{\mathrm{gpsBody}}$ are the configured
@@ -518,85 +518,85 @@ $x_{\mathrm{gpsBody}}$, $y_{\mathrm{gpsBody}}$ are the configured
 
 The EKF prediction uses body-frame IMU linear acceleration and yaw rate:
 
-$$
+```math
 a_B =
 \begin{bmatrix}
 a_{x,m} - b_{ax} \\
 a_{y,m} - b_{ay}
 \end{bmatrix}
-$$
+```
 
-$$
+```math
 R(\psi) =
 \begin{bmatrix}
 \cos\psi & -\sin\psi \\
 \sin\psi & \cos\psi
 \end{bmatrix}
-$$
+```
 
-$$
+```math
 a_W = R(\psi)a_B
-$$
+```
 
-$$
+```math
 \omega = \omega_{z,m} - b_{gz}
-$$
+```
 
-$$
+```math
 x_{k+1} = x_k + \dot{x}_k\Delta t + \frac{1}{2}a_{W,x}\Delta t^2
-$$
+```
 
-$$
+```math
 y_{k+1} = y_k + \dot{y}_k\Delta t + \frac{1}{2}a_{W,y}\Delta t^2
-$$
+```
 
-$$
+```math
 \psi_{k+1} = \mathrm{wrap}(\psi_k + \omega\Delta t)
-$$
+```
 
-$$
+```math
 \dot{x}_{k+1} = \dot{x}_k + a_{W,x}\Delta t
-$$
+```
 
-$$
+```math
 \dot{y}_{k+1} = \dot{y}_k + a_{W,y}\Delta t
-$$
+```
 
-$$
+```math
 b_{ax,k+1} = b_{ax,k},\quad
 b_{ay,k+1} = b_{ay,k},\quad
 b_{gz,k+1} = b_{gz,k}
-$$
+```
 
 GPS measurement update:
 
-$$
+```math
 z_{\mathrm{gps}} =
 \begin{bmatrix}
 x_{\mathrm{gps}} \\
 y_{\mathrm{gps}}
 \end{bmatrix}
-$$
+```
 
-$$
+```math
 h_{\mathrm{gps}}(x_{\mathrm{ekf}}) =
 \begin{bmatrix}
 x \\
 y
 \end{bmatrix}
-$$
+```
 
 IMU yaw measurement update. In simulation this comes from
 `sensor_msgs/msg/Imu.orientation`; in the real system it is intended to stand in
 for a future compass, AHRS, INS, or dual-RTK heading source:
 
-$$
+```math
 z_{\mathrm{imu,yaw}} = \psi_{\mathrm{imu}}
-$$
+```
 
-$$
+```math
 h_{\mathrm{imu,yaw}}(x_{\mathrm{ekf}}) = \psi
-$$
+```
 
 The gyro-z value is not double-counted as a separate measurement in the current
 filter. It is used as the prediction input, and the published yaw rate is
@@ -723,23 +723,23 @@ z_ref(t), z_dot_ref(t), z_ddot_ref(t), nu_ref(t), tau_ref(t)
 
 where:
 
-$$
+```math
 z =
 \begin{bmatrix}
 x & y & \psi
 \end{bmatrix}^{T}
-$$
+```
 
 and:
 
-$$
+```math
 \nu =
 \begin{bmatrix}
 u & v & r
 \end{bmatrix}^{T}
 =
 R_3(\psi)^T \dot{z}
-$$
+```
 
 The available reference names are:
 
@@ -751,7 +751,7 @@ hold, straight, arc, stop, figure8, spiral, yaw
 
 The optimizer state is:
 
-$$
+```math
 x_k =
 \begin{bmatrix}
 x_k &
@@ -764,18 +764,18 @@ s_{v,k} &
 \tau_{u,k-1} &
 \tau_{r,k-1}
 \end{bmatrix}^{T}
-$$
+```
 
 The control input is:
 
-$$
+```math
 u_k =
 \begin{bmatrix}
 \tau_{u,k} &
 \tau_{v,k} &
 \tau_{r,k}
 \end{bmatrix}^{T}
-$$
+```
 
 `s_v` is a nonnegative lateral-force slack state. The final two state elements
 are previous-input bookkeeping states used only for command-step penalties.
@@ -792,87 +792,68 @@ The total prediction horizon is 4.0 seconds.
 
 Define the body-frame velocities from local-frame velocity:
 
-$$
-u = \dot{x}\cos\psi + \dot{y}\sin\psi
-$$
-
-$$
-v = -\dot{x}\sin\psi + \dot{y}\cos\psi
-$$
-
-$$
-r = \dot{\psi}
-$$
+```math
+\begin{aligned}
+u &= \dot{x}\cos\psi + \dot{y}\sin\psi \\
+v &= -\dot{x}\sin\psi + \dot{y}\cos\psi \\
+r &= \dot{\psi}
+\end{aligned}
+```
 
 The nominal damping terms are:
 
-$$
-D_u = d_u u + d_{uu}|u|u
-$$
-
-$$
-D_v = d_v v + d_{vv}|v|v
-$$
-
-$$
-D_r = d_r r + d_{rr}|r|r
-$$
+```math
+\begin{aligned}
+D_u &= d_u u + d_{uu}|u|u \\
+D_v &= d_v v + d_{vv}|v|v \\
+D_r &= d_r r + d_{rr}|r|r
+\end{aligned}
+```
 
 The body-frame dynamics are:
 
-$$
-\dot{u} =
-\frac{\tau_u + mvr - D_u}{m}
-$$
-
-$$
-\dot{v} =
-\frac{\tau_v - mur - D_v}{m}
-$$
-
-$$
-\dot{r} =
-\frac{\tau_r - D_r}{I_z}
-$$
+```math
+\begin{aligned}
+\dot{u} &= \frac{\tau_u + mvr - D_u}{m} \\
+\dot{v} &= \frac{\tau_v - mur - D_v}{m} \\
+\dot{r} &= \frac{\tau_r - D_r}{I_z}
+\end{aligned}
+```
 
 The local-frame acceleration used by the NMPC is:
 
-$$
-\ddot{x} =
+```math
+\begin{aligned}
+\ddot{x} &=
 \cos\psi\,\dot{u}
 - \sin\psi\,\dot{v}
-- r\dot{y}
-$$
-
-$$
-\ddot{y} =
+- r\dot{y} \\
+\ddot{y} &=
 \sin\psi\,\dot{u}
 + \cos\psi\,\dot{v}
-+ r\dot{x}
-$$
-
-$$
-\ddot{\psi} = \dot{r}
-$$
++ r\dot{x} \\
+\ddot{\psi} &= \dot{r}
+\end{aligned}
+```
 
 The discrete prediction model is fourth-order Runge-Kutta:
 
-$$
+```math
 x_{k+1} = f_{\mathrm{RK4}}(x_k,u_k,\Delta t_k)
-$$
+```
 
 ### Cost Function
 
 Let:
 
-$$
+```math
 e_{\psi,k} =
 \mathrm{wrap}(\psi_k-\psi_{\mathrm{ref},k})
-$$
+```
 
 The stage cost is:
 
-$$
+```math
 \begin{aligned}
 J_k = \Delta t_k (&
 q_p\left((x_k-x_{\mathrm{ref},k})^2+(y_k-y_{\mathrm{ref},k})^2\right)
@@ -886,25 +867,25 @@ q_p\left((x_k-x_{\mathrm{ref},k})^2+(y_k-y_{\mathrm{ref},k})^2\right)
 +(\tau_{r,k}-\tau_{r,k-1})^2\right)
 + q_s s_{v,k}^2 )
 \end{aligned}
-$$
+```
 
 The terminal cost uses the same pose and velocity errors with terminal weights
 and no control effort terms:
 
-$$
+```math
 J_N =
 q_{p,N}\|p_N-p_{\mathrm{ref},N}\|^2
 + q_{\psi,N}e_{\psi,N}^2
 + q_{v,N}\|\dot{p}_N-\dot{p}_{\mathrm{ref},N}\|^2
 + q_{r,N}(\dot{\psi}_N-\dot{\psi}_{\mathrm{ref},N})^2
-$$
+```
 
 The total problem is:
 
-$$
+```math
 \min_{x_0,\ldots,x_N,u_0,\ldots,u_{N-1}}
 J_N + \sum_{k=0}^{N-1} J_k
-$$
+```
 
 subject to the RK4 dynamics, initial EKF state equality, actuator limits, and
 the tightened lateral-force slack constraints below.
@@ -913,46 +894,40 @@ the tightened lateral-force slack constraints below.
 
 The differential-thrust allocation inside the NMPC is:
 
-$$
-T_L =
+```math
+\begin{aligned}
+T_L &=
 \frac{1}{2}
 \left(
 \tau_u-\frac{\tau_r}{l}
-\right)
-$$
-
-$$
-T_R =
+\right) \\
+T_R &=
 \frac{1}{2}
 \left(
 \tau_u+\frac{\tau_r}{l}
 \right)
-$$
+\end{aligned}
+```
 
 The current hard actuator constraints are:
 
-$$
--100 \le T_L \le 100
-$$
-
-$$
--100 \le T_R \le 100
-$$
-
-$$
--100 \le \tau_r \le 100
-$$
+```math
+\begin{aligned}
+-100 &\le T_L \le 100 \\
+-100 &\le T_R \le 100 \\
+-100 &\le \tau_r \le 100
+\end{aligned}
+```
 
 The underactuated lateral-force condition is enforced as a tight soft
 constraint:
 
-$$
--s_{v,k} \le \tau_{v,k} \le s_{v,k}
-$$
-
-$$
-0 \le s_{v,k} \le 0.05
-$$
+```math
+\begin{aligned}
+-s_{v,k} &\le \tau_{v,k} \le s_{v,k} \\
+0 &\le s_{v,k} \le 0.05
+\end{aligned}
+```
 
 The controller outputs only the first optimized `tau_u` and `tau_r` through the
 allocation above. `tau_v` is never sent to an actuator; it is kept in the NLP to
