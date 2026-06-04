@@ -749,27 +749,24 @@ hold, straight, arc, stop, figure8, spiral, yaw
 
 ### NMPC State And Control
 
-The optimizer state is:
+The physical prediction state is:
 
 ```math
-x_k =
+\eta_k =
 \begin{bmatrix}
 x_k &
 y_k &
 \psi_k &
 \dot{x}_k &
 \dot{y}_k &
-\dot{\psi}_k &
-s_{v,k} &
-\tau_{u,k-1} &
-\tau_{r,k-1}
+\dot{\psi}_k
 \end{bmatrix}^{T}
 ```
 
-The control input is:
+The optimizer control input is the generalized force:
 
 ```math
-u_k =
+\tau_k =
 \begin{bmatrix}
 \tau_{u,k} &
 \tau_{v,k} &
@@ -777,8 +774,30 @@ u_k =
 \end{bmatrix}^{T}
 ```
 
-`s_v` is a nonnegative lateral-force slack state. The final two state elements
-are previous-input bookkeeping states used only for command-step penalties.
+The acados solver uses an augmented bookkeeping state:
+
+```math
+\chi_k =
+\begin{bmatrix}
+\eta_k^{T} &
+s_v &
+\tau_{u,k-1} &
+\tau_{r,k-1}
+\end{bmatrix}^{T}
+```
+
+`s_v` is a nonnegative horizon-wide lateral-force slack variable. The
+previous-input terms are not physical states and are not current control inputs;
+they are carried only so the discrete NLP can penalize command steps:
+
+```math
+\tau_{u,k}-\tau_{u,k-1},\qquad
+\tau_{r,k}-\tau_{r,k-1}
+```
+
+The discrete augmented dynamics keep `s_v` constant and copy the current
+optimized command into the previous-command memory states at the next shooting
+node.
 
 The receding horizon uses `N = 12` and this nonuniform time grid:
 
@@ -873,19 +892,19 @@ The continuous-time problem is:
 
 ```math
 \begin{aligned}
-\min_{\eta(\cdot),\,\tau(\cdot),\,s_v(\cdot)}
+\min_{\eta(\cdot),\,\tau(\cdot),\,s_v}
 \quad
 &\Phi(\eta(t_f),\eta_{\mathrm{ref}}(t_f))
 + \int_{t_0}^{t_f}
-L(\eta(t),\tau(t),s_v(t),\eta_{\mathrm{ref}}(t))\,dt \\
+L(\eta(t),\tau(t),s_v,\eta_{\mathrm{ref}}(t))\,dt \\
 \mathrm{s.t.}\quad
 &\dot{\eta}(t)=f(\eta(t),\tau(t)) \\
 &\eta(t_0)=\hat{\eta}(t_0) \\
 &T_{\min}\le T_L(\tau(t))\le T_{\max} \\
 &T_{\min}\le T_R(\tau(t))\le T_{\max} \\
 &-\tau_{r,\max}\le \tau_r(t)\le \tau_{r,\max} \\
-&-s_v(t)\le \tau_v(t)\le s_v(t) \\
-&0\le s_v(t)\le s_{v,\max}
+&-s_v\le \tau_v(t)\le s_v \\
+&0\le s_v\le s_{v,\max}
 \end{aligned}
 ```
 
@@ -934,9 +953,10 @@ q_{p,N}\|p(t_f)-p_{\mathrm{ref}}(t_f)\|^2
 ```
 
 The implemented controller solves a nonuniform RK4 transcription of this OCP.
-The discrete state additionally carries `s_v`, `tau_u,k-1`, and `tau_r,k-1` so
-the code can impose the lateral-force soft constraint and command-step
-regularization at each shooting node.
+The acados implementation augments the physical state with the constant `s_v`,
+`tau_u,k-1`, and `tau_r,k-1` only for the lateral-force soft constraint and
+command-step regularization. These augmented entries are bookkeeping variables,
+not extra USV states.
 
 ### Cost Function
 
@@ -961,7 +981,7 @@ q_p\left((x_k-x_{\mathrm{ref},k})^2+(y_k-y_{\mathrm{ref},k})^2\right)
 + q_{\tau r}\tau_{r,k}^2 \\
 &+ q_{\Delta}\left((\tau_{u,k}-\tau_{u,k-1})^2
 +(\tau_{r,k}-\tau_{r,k-1})^2\right)
-+ q_s s_{v,k}^2 )
++ q_s s_v^2 )
 \end{aligned}
 ```
 
@@ -979,12 +999,13 @@ q_{p,N}\|p_N-p_{\mathrm{ref},N}\|^2
 The total problem is:
 
 ```math
-\min_{x_0,\ldots,x_N,u_0,\ldots,u_{N-1}}
+\min_{\chi_0,\ldots,\chi_N,\tau_0,\ldots,\tau_{N-1}}
 J_N + \sum_{k=0}^{N-1} J_k
 ```
 
-subject to the RK4 dynamics, initial EKF state equality, actuator limits, and
-the tightened lateral-force slack constraints below.
+subject to the RK4 augmented dynamics, physical initial state from the EKF, the
+previous-command memory initialized from the last applied command, actuator
+limits, and the tightened lateral-force slack constraints below.
 
 ### Constraints And Allocation
 
@@ -1020,8 +1041,8 @@ constraint:
 
 ```math
 \begin{aligned}
--s_{v,k} &\le \tau_{v,k} \le s_{v,k} \\
-0 &\le s_{v,k} \le 0.05
+-s_v &\le \tau_{v,k} \le s_v \\
+0 &\le s_v \le 0.05
 \end{aligned}
 ```
 
