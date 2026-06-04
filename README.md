@@ -842,6 +842,102 @@ The discrete prediction model is fourth-order Runge-Kutta:
 x_{k+1} = f_{\mathrm{RK4}}(x_k,u_k,\Delta t_k)
 ```
 
+### Continuous-Time OCP Form
+
+For paper notation, the corresponding continuous-time optimal control problem can
+be written before discretization. Define the physical NMPC state and generalized
+force input as:
+
+```math
+\eta(t) =
+\begin{bmatrix}
+x(t) &
+y(t) &
+\psi(t) &
+\dot{x}(t) &
+\dot{y}(t) &
+\dot{\psi}(t)
+\end{bmatrix}^{T}
+```
+
+```math
+\tau(t) =
+\begin{bmatrix}
+\tau_u(t) &
+\tau_v(t) &
+\tau_r(t)
+\end{bmatrix}^{T}
+```
+
+The continuous-time problem is:
+
+```math
+\begin{aligned}
+\min_{\eta(\cdot),\,\tau(\cdot),\,s_v(\cdot)}
+\quad
+&\Phi(\eta(t_f),\eta_{\mathrm{ref}}(t_f))
++ \int_{t_0}^{t_f}
+L(\eta(t),\tau(t),s_v(t),\eta_{\mathrm{ref}}(t))\,dt \\
+\mathrm{s.t.}\quad
+&\dot{\eta}(t)=f(\eta(t),\tau(t)) \\
+&\eta(t_0)=\hat{\eta}(t_0) \\
+&T_{\min}\le T_L(\tau(t))\le T_{\max} \\
+&T_{\min}\le T_R(\tau(t))\le T_{\max} \\
+&-\tau_{r,\max}\le \tau_r(t)\le \tau_{r,\max} \\
+&-s_v(t)\le \tau_v(t)\le s_v(t) \\
+&0\le s_v(t)\le s_{v,\max}
+\end{aligned}
+```
+
+with:
+
+```math
+\begin{aligned}
+T_L(\tau) &=
+\frac{1}{2}
+\left(
+\tau_u-\frac{\tau_r}{l}
+\right) \\
+T_R(\tau) &=
+\frac{1}{2}
+\left(
+\tau_u+\frac{\tau_r}{l}
+\right)
+\end{aligned}
+```
+
+The continuous running cost matching the current implementation is:
+
+```math
+\begin{aligned}
+L =\;&
+q_p\|p-p_{\mathrm{ref}}\|^2
++q_{\psi}e_{\psi}^{2}
++q_v\|\dot{p}-\dot{p}_{\mathrm{ref}}\|^2
++q_r(\dot{\psi}-\dot{\psi}_{\mathrm{ref}})^2 \\
+&+q_u\tau_u^2
++q_{\tau r}\tau_r^2
++q_s s_v^2
+\end{aligned}
+```
+
+and the terminal cost is:
+
+```math
+\begin{aligned}
+\Phi =\;&
+q_{p,N}\|p(t_f)-p_{\mathrm{ref}}(t_f)\|^2
++ q_{\psi,N}e_{\psi}(t_f)^2 \\
+&+ q_{v,N}\|\dot{p}(t_f)-\dot{p}_{\mathrm{ref}}(t_f)\|^2
++ q_{r,N}(\dot{\psi}(t_f)-\dot{\psi}_{\mathrm{ref}}(t_f))^2
+\end{aligned}
+```
+
+The implemented controller solves a nonuniform RK4 transcription of this OCP.
+The discrete state additionally carries `s_v`, `tau_u,k-1`, and `tau_r,k-1` so
+the code can impose the lateral-force soft constraint and command-step
+regularization at each shooting node.
+
 ### Cost Function
 
 Let:
@@ -1070,14 +1166,13 @@ The next iterations should:
 1. Revisit reference speed profiles against the `+-100 N` actuator limits.
 2. Keep the strict cleanup / fresh EKF-origin workflow for every closed-loop
    test.
-3. Add reference feasibility diagnostics that predict saturation before launch.
-4. Improve terminal logic with a docking/hold phase that remains inside the
+3. Improve terminal logic with a docking/hold phase that remains inside the
    same NMPC formulation instead of relying on a separate PID fallback.
-5. Investigate solver status `2` from acados and tune scaling / globalization
+4. Investigate solver status `2` from acados and tune scaling / globalization
    so successful closed-loop behavior also has cleaner solver convergence.
-6. Test with wind/current, initial pose offsets, and estimator noise before
+5. Test with wind/current, initial pose offsets, and estimator noise before
    calling the controller robust.
-7. Later, replace the synthetic references with a MINCO or obstacle-aware
+6. Later, replace the synthetic references with a MINCO or obstacle-aware
    spline planner that directly optimizes curvature, clearance, and actuator
    feasibility.
 
