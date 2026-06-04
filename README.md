@@ -1075,6 +1075,29 @@ discourage infeasible lateral correction trajectories.
 | `max_thrust` | 100 N |
 | `max_yaw_moment` | 100 N m |
 
+The RK4 prediction model uses the following nominal WAM-V system parameters:
+
+| Parameter | Value | Source in VRX simulation |
+| --- | ---: | --- |
+| `mass` | 180.0 kg | `wamv_base.urdf.xacro` base-link inertial mass |
+| `iz` | 446.0 kg m^2 | `wamv_base.urdf.xacro` base-link yaw inertia |
+| `du` | 100.0 | `SimpleHydrodynamics` `<xU>` |
+| `duu` | 150.0 | `SimpleHydrodynamics` `<xUU>` |
+| `dv` | 100.0 | `SimpleHydrodynamics` `<yV>` |
+| `dvv` | 100.0 | `SimpleHydrodynamics` `<yVV>` |
+| `dr` | 800.0 | `SimpleHydrodynamics` `<nR>` |
+| `drr` | 800.0 | `SimpleHydrodynamics` `<nRR>` |
+| `thruster_half_spacing` | 1.027135 m | WAM-V differential-thrust geometry |
+
+For the Gazebo / VRX development environment, these are simulator-configured
+nominal values and should be treated as the best available model parameters for
+the current RK4 prediction model. They still do not make the RK4 model a perfect
+copy of all simulator effects: the simulator can include surface, wave,
+buoyancy, contact, and plugin details not represented by this planar 3-DOF
+model. For the real WAM-V / RTK system, the mass, inertia, damping, thrust map,
+and actuator limits should be re-identified from experiment data before relying
+on high-accuracy MPC prediction.
+
 ### Debug And Plots
 
 The controller debug topic `/safe_docking/flatness_mpc/debug` includes the
