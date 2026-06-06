@@ -900,9 +900,10 @@ L(\eta(t),\tau(t),s_v,\eta_{\mathrm{ref}}(t))\,dt \\
 \mathrm{s.t.}\quad
 &\dot{\eta}(t)=f(\eta(t),\tau(t)) \\
 &\eta(t_0)=\hat{\eta}(t_0) \\
-&T_{\min}\le T_L(\tau(t))\le T_{\max} \\
-&T_{\min}\le T_R(\tau(t))\le T_{\max} \\
-&-\tau_{r,\max}\le \tau_r(t)\le \tau_{r,\max} \\
+&T_{L,\min}\le \frac{\tau_u(t)}{2}
+-\frac{\tau_r(t)}{2l} \le T_{L,\max} \\
+&T_{R,\min}\le \frac{\tau_u(t)}{2}
++\frac{\tau_r(t)}{2l} \le T_{R,\max} \\
 &-s_v\le \tau_v(t)\le s_v \\
 &0\le s_v\le s_{v,\max}
 \end{aligned}
@@ -1030,11 +1031,24 @@ The current hard actuator constraints are:
 
 ```math
 \begin{aligned}
--100 &\le T_L \le 100 \\
--100 &\le T_R \le 100 \\
--100 &\le \tau_r \le 100
+T_{L,\min}
+&\le
+\frac{\tau_u}{2}-\frac{\tau_r}{2l}
+\le
+T_{L,\max} \\
+T_{R,\min}
+&\le
+\frac{\tau_u}{2}+\frac{\tau_r}{2l}
+\le
+T_{R,\max}
 \end{aligned}
 ```
+
+With the current symmetric thrust limits, `T_L,min = T_R,min = -100 N` and
+`T_L,max = T_R,max = 100 N`. There is no separate hard yaw-rate constraint in
+the tracker. Any yaw-rate limit should be imposed by the future trajectory
+optimizer / MINCO layer; the tracker only enforces the physical differential
+thrust actuator limits.
 
 The underactuated lateral-force condition is enforced as a tight soft
 constraint:
@@ -1073,7 +1087,6 @@ discourage infeasible lateral correction trajectories.
 | `tau_v_slack_max` | 0.05 N |
 | `min_thrust` | -100 N |
 | `max_thrust` | 100 N |
-| `max_yaw_moment` | 100 N m |
 
 The RK4 prediction model uses the following nominal WAM-V system parameters:
 
@@ -1219,6 +1232,309 @@ The next iterations should:
 6. Later, replace the synthetic references with a MINCO or obstacle-aware
    spline planner that directly optimizes curvature, clearance, and actuator
    feasibility.
+
+## MINCO-USV Dense Penalty Gradients
+
+The MINCO-USV trajectory generator follows the GCOPTER-style split between
+polynomial generation and outer-variable optimization. The outer optimizer
+changes only intermediate flat-output waypoints and segment times. For each
+candidate outer variable vector, the polynomial coefficients are recovered from
+the MINCO-S3NU linear system, then dense quadrature penalties approximate the
+continuous feasibility constraints.
+
+The flat output is:
+
+```math
+z =
+\begin{bmatrix}
+x & y & \psi
+\end{bmatrix}^{T}
+```
+
+The body-frame velocity is:
+
+```math
+\nu =
+\begin{bmatrix}
+u & v & r
+\end{bmatrix}^{T}
+=
+R(\psi)^{T}\dot{z}
+```
+
+with:
+
+```math
+R(\psi)=
+\begin{bmatrix}
+\cos\psi & -\sin\psi & 0 \\
+\sin\psi & \cos\psi & 0 \\
+0 & 0 & 1
+\end{bmatrix}
+```
+
+Therefore:
+
+```math
+\begin{aligned}
+u &= \cos\psi\,\dot{x}+\sin\psi\,\dot{y} \\
+v &= -\sin\psi\,\dot{x}+\cos\psi\,\dot{y} \\
+r &= \dot{\psi}
+\end{aligned}
+```
+
+The body-frame acceleration used by the dense velocity/acceleration penalties
+is:
+
+```math
+\begin{aligned}
+\dot{u} &=
+\cos\psi\,\ddot{x}
++\sin\psi\,\ddot{y}
++rv \\
+\dot{v} &=
+-\sin\psi\,\ddot{x}
++\cos\psi\,\ddot{y}
+-ru \\
+\dot{r} &= \ddot{\psi}
+\end{aligned}
+```
+
+The nominal inverse dynamics used inside the MINCO feasibility penalties are:
+
+```math
+\tau =
+M\dot{\nu}
++C(\nu)\nu
++D(\nu)
+```
+
+where:
+
+```math
+M =
+\begin{bmatrix}
+m & 0 & 0 \\
+0 & m & 0 \\
+0 & 0 & I_z
+\end{bmatrix}
+```
+
+```math
+C(\nu)\nu =
+\begin{bmatrix}
+-mvr \\
+mur \\
+0
+\end{bmatrix}
+```
+
+```math
+D(\nu)=
+\begin{bmatrix}
+d_u u+d_{uu}|u|u \\
+d_v v+d_{vv}|v|v \\
+d_r r+d_{rr}|r|r
+\end{bmatrix}
+```
+
+Substituting the flat-output acceleration into the surge and sway equations
+cancels the Coriolis terms, so the generalized forces used by the dense
+penalty code are:
+
+```math
+\begin{aligned}
+\tau_u &=
+m(\cos\psi\,\ddot{x}+\sin\psi\,\ddot{y})
++d_u u+d_{uu}|u|u \\
+\tau_v &=
+m(-\sin\psi\,\ddot{x}+\cos\psi\,\ddot{y})
++d_v v+d_{vv}|v|v \\
+\tau_r &=
+I_z\ddot{\psi}
++d_r r+d_{rr}|r|r
+\end{aligned}
+```
+
+The actuator feasibility penalty uses the differential-thrust map:
+
+```math
+\begin{aligned}
+T_L &=
+\frac{1}{2}
+\left(
+\tau_u-\frac{\tau_r}{l}
+\right) \\
+T_R &=
+\frac{1}{2}
+\left(
+\tau_u+\frac{\tau_r}{l}
+\right)
+\end{aligned}
+```
+
+The dense penalties currently cover:
+
+```math
+\begin{aligned}
+|\tau_v(t)| &\le \bar{\tau}_v \\
+|\nu_i(t)| &\le \bar{\nu}_i \\
+|\dot{\nu}_i(t)| &\le \bar{a}_i \\
+T_{\min} &\le T_L(t),T_R(t)\le T_{\max}
+\end{aligned}
+```
+
+They are implemented with a smooth positive-part squared penalty:
+
+```math
+\phi_{\mu}(g)=
+\left(
+\frac{\log(1+\exp(\mu g))}{\mu}
+\right)^2
+```
+
+Its derivative is:
+
+```math
+\frac{d\phi_{\mu}}{dg}
+=
+2
+\frac{\log(1+\exp(\mu g))}{\mu}
+\frac{1}{1+\exp(-\mu g)}
+```
+
+For one quadrature node, the weighted dense penalty density is:
+
+```math
+f(z,\dot{z},\ddot{z})
+```
+
+and the implementation computes the analytic node gradients:
+
+```math
+g_z=\frac{\partial f}{\partial z},
+\qquad
+g_{\dot{z}}=\frac{\partial f}{\partial \dot{z}},
+\qquad
+g_{\ddot{z}}=\frac{\partial f}{\partial \ddot{z}}
+```
+
+Let one segment polynomial be:
+
+```math
+z(s)=B_0(s)C
+```
+
+with:
+
+```math
+\dot{z}(s)=B_1(s)C,
+\qquad
+\ddot{z}(s)=B_2(s)C,
+\qquad
+z^{(3)}(s)=B_3(s)C
+```
+
+At quadrature point \(s=\alpha T\), the segment contribution is:
+
+```math
+J_q =
+T w f
+\left(
+z(\alpha T),
+\dot{z}(\alpha T),
+\ddot{z}(\alpha T)
+\right)
+```
+
+The direct coefficient gradient is:
+
+```math
+\frac{\partial J_q}{\partial C}
+=
+T w
+\left(
+B_0^{T}g_z
++B_1^{T}g_{\dot{z}}
++B_2^{T}g_{\ddot{z}}
+\right)
+```
+
+The direct segment-time gradient at fixed coefficients is:
+
+```math
+\frac{\partial J_q}{\partial T}
+=
+w f
++T w \alpha
+\left(
+g_z^{T}\dot{z}
++g_{\dot{z}}^{T}\ddot{z}
++g_{\ddot{z}}^{T}z^{(3)}
+\right)
+```
+
+This is the dense quadrature chain rule used by GCOPTER: the first term comes
+from the quadrature interval scale \(T\), and the second term comes from the
+moving local sample time \(s=\alpha T\). These are direct gradients with
+respect to polynomial coefficients and segment times. The MINCO linear-system
+adjoint then propagates them to the actual outer variables:
+
+```math
+q_1,\ldots,q_{M-1},
+\qquad
+T_1,\ldots,T_M
+```
+
+### Gradient Audit
+
+The analytic gradients were checked at two levels:
+
+1. Node level: for random \(z,\dot{z},\ddot{z}\), the analytic
+   \((g_z,g_{\dot{z}},g_{\ddot{z}})\) was compared against central finite
+   differences of the weighted dense penalty density. The maximum relative
+   error across 100 random nodes was approximately `1.1e-10`.
+2. Trajectory level: the full coefficient and segment-time gradients were
+   compared against central directional finite differences of the quadrature
+   objective. The test is in
+   `robotx_safe_docking_control/test/test_minco_usv_penalties.py`.
+
+The focused MINCO test set passed after switching the optimizer from dense
+finite differences to analytic gradients:
+
+```bash
+PYTHONPATH=/home/zjy/vrx_docking/robotx_safe_docking_control \
+  /usr/bin/python3 -m pytest -q \
+  robotx_safe_docking_control/test/test_usv_flatness.py \
+  robotx_safe_docking_control/test/test_minco_s3nu.py \
+  robotx_safe_docking_control/test/test_minco_usv_penalties.py \
+  robotx_safe_docking_control/test/test_minco_usv_optimizer.py \
+  robotx_safe_docking_control/test/test_minco_feasible_reference.py \
+  robotx_safe_docking_control/test/test_minco_offline_validation.py \
+  robotx_safe_docking_control/test/test_minco_reference_generation.py \
+  robotx_safe_docking_control/test/test_minco_adaptive_feasibility.py
+```
+
+Result:
+
+```text
+30 passed
+```
+
+With five MINCO segments and continuation on \(\bar{\tau}_v\), the analytic
+gradient sweep produced the following clean tight results:
+
+| Case | Total time | Tightest clean `tau_v_bar` | Max `abs(tau_v)` | Max thrust |
+| --- | ---: | ---: | ---: | ---: |
+| `local_offset_rest` | 16 s | 3 N | 2.809 N | 28.44 N |
+| `diagonal_rest` | 24 s | 5 N | 4.776 N | 27.79 N |
+| `large_yaw_rest` | 20 s | 3 N | 2.806 N | 39.77 N |
+
+The sweep artifact is saved at:
+
+```text
+output/minco_analytic_gradient_tight_sweep_20260606/analytic_gradient_tight_sweep.png
+```
 
 ## Reference
 

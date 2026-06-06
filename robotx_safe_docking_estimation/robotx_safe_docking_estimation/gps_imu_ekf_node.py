@@ -3,6 +3,9 @@ from typing import Optional
 
 import numpy as np
 import rclpy
+from diagnostic_msgs.msg import DiagnosticArray
+from diagnostic_msgs.msg import DiagnosticStatus
+from diagnostic_msgs.msg import KeyValue
 from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
@@ -15,6 +18,10 @@ from tf2_ros import TransformBroadcaster
 
 
 WGS84_A = 6378137.0
+DIAG_OK = 0
+DIAG_WARN = 1
+DIAG_ERROR = 2
+DIAG_STALE = 3
 
 
 def wrap_angle(angle: float) -> float:
@@ -83,9 +90,21 @@ class GpsImuEkfNode(Node):
             'imu_topic', '/wamv/sensors/imu/imu/data')
         self.declare_parameter('state_topic', '/safe_docking/state')
         self.declare_parameter('odom_topic', '/safe_docking/odometry')
+        self.declare_parameter('health_topic', '/safe_docking/ekf_health')
         self.declare_parameter('origin_frame', 'safe_docking/odom')
         self.declare_parameter('base_frame', 'wamv/wamv/base_link')
         self.declare_parameter('publish_tf', False)
+        self.declare_parameter('publish_rate_hz', 100.0)
+        self.declare_parameter('health_publish_rate_hz', 1.0)
+        self.declare_parameter('sensor_rate_window_sec', 3.0)
+        self.declare_parameter('imu_expected_rate_hz', 100.0)
+        self.declare_parameter('imu_min_rate_hz', 70.0)
+        self.declare_parameter('imu_stale_warn_sec', 0.5)
+        self.declare_parameter('imu_stale_error_sec', 5.0)
+        self.declare_parameter('gps_expected_rate_hz', 20.0)
+        self.declare_parameter('gps_min_rate_hz', 10.0)
+        self.declare_parameter('gps_stale_warn_sec', 1.0)
+        self.declare_parameter('gps_stale_error_sec', 5.0)
         self.declare_parameter('gps_body_x', -0.85)
         self.declare_parameter('gps_body_y', 0.0)
         self.declare_parameter('use_imu_orientation', True)
@@ -112,12 +131,36 @@ class GpsImuEkfNode(Node):
             'state_topic').get_parameter_value().string_value
         self.odom_topic = self.get_parameter(
             'odom_topic').get_parameter_value().string_value
+        self.health_topic = self.get_parameter(
+            'health_topic').get_parameter_value().string_value
         self.origin_frame = self.get_parameter(
             'origin_frame').get_parameter_value().string_value
         self.base_frame = self.get_parameter(
             'base_frame').get_parameter_value().string_value
         self.publish_tf = self.get_parameter(
             'publish_tf').get_parameter_value().bool_value
+        self.publish_rate_hz = self.get_parameter(
+            'publish_rate_hz').get_parameter_value().double_value
+        self.health_publish_rate_hz = self.get_parameter(
+            'health_publish_rate_hz').get_parameter_value().double_value
+        self.sensor_rate_window_sec = self.get_parameter(
+            'sensor_rate_window_sec').get_parameter_value().double_value
+        self.imu_expected_rate_hz = self.get_parameter(
+            'imu_expected_rate_hz').get_parameter_value().double_value
+        self.imu_min_rate_hz = self.get_parameter(
+            'imu_min_rate_hz').get_parameter_value().double_value
+        self.imu_stale_warn_sec = self.get_parameter(
+            'imu_stale_warn_sec').get_parameter_value().double_value
+        self.imu_stale_error_sec = self.get_parameter(
+            'imu_stale_error_sec').get_parameter_value().double_value
+        self.gps_expected_rate_hz = self.get_parameter(
+            'gps_expected_rate_hz').get_parameter_value().double_value
+        self.gps_min_rate_hz = self.get_parameter(
+            'gps_min_rate_hz').get_parameter_value().double_value
+        self.gps_stale_warn_sec = self.get_parameter(
+            'gps_stale_warn_sec').get_parameter_value().double_value
+        self.gps_stale_error_sec = self.get_parameter(
+            'gps_stale_error_sec').get_parameter_value().double_value
         self.gps_body_x = self.get_parameter(
             'gps_body_x').get_parameter_value().double_value
         self.gps_body_y = self.get_parameter(
@@ -164,7 +207,20 @@ class GpsImuEkfNode(Node):
         self.last_predict_time: Optional[float] = None
         self.last_gps_time: Optional[float] = None
         self.last_base_xy_meas: Optional[np.ndarray] = None
+        self.latest_state_stamp = None
         self.last_yaw_rate = 0.0
+        self.last_imu_receive_time: Optional[float] = None
+        self.last_gps_receive_time: Optional[float] = None
+        self.last_valid_gps_receive_time: Optional[float] = None
+        self.last_imu_stamp_time: Optional[float] = None
+        self.last_gps_stamp_time: Optional[float] = None
+        self.imu_receive_times = []
+        self.gps_receive_times = []
+        self.gps_fix_valid = False
+        self.imu_nonmonotonic_count = 0
+        self.gps_nonmonotonic_count = 0
+        self.last_health_level: Optional[int] = None
+        self.last_health_message: Optional[str] = None
 
         self.x = np.zeros(self.STATE_SIZE)
         self.p = np.diag([4.0, 4.0, 0.5, 2.0, 2.0, 0.25, 0.25, 0.05])
@@ -172,6 +228,8 @@ class GpsImuEkfNode(Node):
         self.state_pub = self.create_publisher(
             Float64MultiArray, self.state_topic, 10)
         self.odom_pub = self.create_publisher(Odometry, self.odom_topic, 10)
+        self.health_pub = self.create_publisher(
+            DiagnosticArray, self.health_topic, 10)
         self.tf_broadcaster = TransformBroadcaster(
             self) if self.publish_tf else None
 
@@ -179,14 +237,26 @@ class GpsImuEkfNode(Node):
             NavSatFix, self.gps_topic, self.on_gps, qos_profile_sensor_data)
         self.create_subscription(
             Imu, self.imu_topic, self.on_imu, qos_profile_sensor_data)
+        self.create_timer(
+            1.0 / max(self.publish_rate_hz, 1e-3),
+            self.on_publish_timer)
+        self.create_timer(
+            1.0 / max(self.health_publish_rate_hz, 1e-3),
+            self.on_health_timer)
 
         self.get_logger().info(
             f'GPS+IMU EKF collecting GPS origin samples on '
-            f'{self.gps_topic}; IMU topic: {self.imu_topic}')
+            f'{self.gps_topic}; IMU topic: {self.imu_topic}; '
+            f'publish_rate={self.publish_rate_hz:.1f} Hz; '
+            f'health_topic={self.health_topic}')
 
     def on_gps(self, msg: NavSatFix):
+        self._record_sensor_message('gps', msg.header.stamp)
         if not self._valid_fix(msg):
+            self.gps_fix_valid = False
             return
+        self.gps_fix_valid = True
+        self.last_valid_gps_receive_time = self.last_gps_receive_time
 
         stamp = stamp_to_sec(msg.header.stamp)
         if stamp <= 0.0:
@@ -224,9 +294,10 @@ class GpsImuEkfNode(Node):
 
         self.last_gps_time = stamp
         self.last_base_xy_meas = z
-        self.publish_state(msg.header.stamp)
+        self.latest_state_stamp = msg.header.stamp
 
     def on_imu(self, msg: Imu):
+        self._record_sensor_message('imu', msg.header.stamp)
         if self.local_cartesian is None:
             return
 
@@ -240,7 +311,7 @@ class GpsImuEkfNode(Node):
                 self.x[self.IDX_PSI] = yaw_from_quaternion(msg.orientation)
                 self._set_initial_yaw(self.x[self.IDX_PSI])
             self.last_yaw_rate = msg.angular_velocity.z - self.x[self.IDX_B_GZ]
-            self.publish_state(msg.header.stamp)
+            self.latest_state_stamp = msg.header.stamp
             return
 
         dt = stamp - self.last_predict_time
@@ -265,7 +336,7 @@ class GpsImuEkfNode(Node):
 
         self.x[self.IDX_PSI] = wrap_angle(self.x[self.IDX_PSI])
         self.last_yaw_rate = msg.angular_velocity.z - self.x[self.IDX_B_GZ]
-        self.publish_state(msg.header.stamp)
+        self.latest_state_stamp = msg.header.stamp
 
     def _predict(self, msg: Imu, dt: float):
         psi = self.x[self.IDX_PSI]
@@ -397,6 +468,217 @@ class GpsImuEkfNode(Node):
             tf_msg.transform.rotation = odom.pose.pose.orientation
             self.tf_broadcaster.sendTransform(tf_msg)
 
+    def on_publish_timer(self):
+        if not rclpy.ok():
+            return
+        if (self.local_cartesian is None or self.latest_state_stamp is None or
+                self.initial_yaw is None):
+            return
+        self.publish_state(self.get_clock().now().to_msg())
+
+    def on_health_timer(self):
+        if not rclpy.ok():
+            return
+
+        diagnostics = self._build_health_diagnostic()
+        self.health_pub.publish(diagnostics)
+
+        if not diagnostics.status:
+            return
+        status = diagnostics.status[0]
+        level = self._diagnostic_level_value(status.level)
+        changed = (
+            self.last_health_level != level or
+            self.last_health_message != status.message)
+        if changed:
+            self.last_health_level = level
+            self.last_health_message = status.message
+            text = (
+                f'EKF health {self._diagnostic_level_name(level)}: '
+                f'{status.message}')
+            if level == DIAG_OK:
+                self.get_logger().info(text)
+            elif level == DIAG_WARN:
+                self.get_logger().warn(text)
+            else:
+                self.get_logger().error(text)
+
+    def _build_health_diagnostic(self) -> DiagnosticArray:
+        now_msg = self.get_clock().now().to_msg()
+        now = stamp_to_sec(now_msg)
+
+        imu_rate = self._sensor_rate(self.imu_receive_times)
+        gps_rate = self._sensor_rate(self.gps_receive_times)
+        imu_age = self._sensor_age(self.last_imu_receive_time, now)
+        gps_age = self._sensor_age(self.last_gps_receive_time, now)
+        valid_gps_age = self._sensor_age(
+            self.last_valid_gps_receive_time, now)
+
+        level = DIAG_OK
+        reasons = []
+
+        def raise_level(new_level: int, reason: str):
+            nonlocal level
+            level = max(level, new_level)
+            reasons.append(reason)
+
+        self._check_sensor_health(
+            'imu', self.last_imu_receive_time, imu_age, imu_rate,
+            self.imu_min_rate_hz, self.imu_stale_warn_sec,
+            self.imu_stale_error_sec, raise_level)
+        self._check_sensor_health(
+            'gps', self.last_gps_receive_time, gps_age, gps_rate,
+            self.gps_min_rate_hz, self.gps_stale_warn_sec,
+            self.gps_stale_error_sec, raise_level)
+
+        if self.last_gps_receive_time is not None and not self.gps_fix_valid:
+            raise_level(DIAG_WARN, 'gps_fix_invalid')
+        if self.local_cartesian is None:
+            raise_level(DIAG_WARN, 'gps_origin_initializing')
+        if self.initial_yaw is None:
+            raise_level(DIAG_WARN, 'yaw_initializing')
+        if self.imu_nonmonotonic_count > 0:
+            raise_level(DIAG_WARN, 'imu_stamp_nonmonotonic')
+        if self.gps_nonmonotonic_count > 0:
+            raise_level(DIAG_WARN, 'gps_stamp_nonmonotonic')
+
+        status = DiagnosticStatus()
+        status.level = bytes([level])
+        status.name = 'safe_docking/ekf_sensor_health'
+        status.hardware_id = 'wamv'
+        status.message = 'healthy' if level == DIAG_OK else (
+            ', '.join(reasons))
+        status.values = [
+            self._kv('healthy', str(level == DIAG_OK).lower()),
+            self._kv('imu_rate_hz', self._format_float(imu_rate)),
+            self._kv('imu_expected_rate_hz',
+                     self._format_float(self.imu_expected_rate_hz)),
+            self._kv('imu_min_rate_hz',
+                     self._format_float(self.imu_min_rate_hz)),
+            self._kv('imu_age_sec', self._format_float(imu_age)),
+            self._kv('imu_stale_warn_sec',
+                     self._format_float(self.imu_stale_warn_sec)),
+            self._kv('imu_stale_error_sec',
+                     self._format_float(self.imu_stale_error_sec)),
+            self._kv('gps_rate_hz', self._format_float(gps_rate)),
+            self._kv('gps_expected_rate_hz',
+                     self._format_float(self.gps_expected_rate_hz)),
+            self._kv('gps_min_rate_hz',
+                     self._format_float(self.gps_min_rate_hz)),
+            self._kv('gps_age_sec', self._format_float(gps_age)),
+            self._kv('gps_valid_age_sec', self._format_float(valid_gps_age)),
+            self._kv('gps_stale_warn_sec',
+                     self._format_float(self.gps_stale_warn_sec)),
+            self._kv('gps_stale_error_sec',
+                     self._format_float(self.gps_stale_error_sec)),
+            self._kv('gps_fix_valid', str(self.gps_fix_valid).lower()),
+            self._kv('origin_initialized',
+                     str(self.local_cartesian is not None).lower()),
+            self._kv('yaw_initialized',
+                     str(self.initial_yaw is not None).lower()),
+            self._kv('imu_nonmonotonic_count',
+                     str(self.imu_nonmonotonic_count)),
+            self._kv('gps_nonmonotonic_count',
+                     str(self.gps_nonmonotonic_count)),
+        ]
+
+        diagnostics = DiagnosticArray()
+        diagnostics.header.stamp = now_msg
+        diagnostics.status = [status]
+        return diagnostics
+
+    def _check_sensor_health(self, name: str, last_receive_time, age, rate,
+                             min_rate, stale_warn_sec, stale_error_sec,
+                             raise_level):
+        if last_receive_time is None:
+            raise_level(DIAG_WARN, f'{name}_waiting_for_messages')
+            return
+        if age is not None and age >= stale_error_sec:
+            raise_level(DIAG_STALE, f'{name}_stale_error')
+        elif age is not None and age >= stale_warn_sec:
+            raise_level(DIAG_WARN, f'{name}_stale_warn')
+        if rate is not None and rate <= min_rate:
+            raise_level(DIAG_WARN, f'{name}_rate_low')
+
+    def _record_sensor_message(self, sensor_name: str, stamp):
+        stamp_time = stamp_to_sec(stamp)
+        now = self._now_sec()
+        if now <= 0.0 and stamp_time > 0.0:
+            now = stamp_time
+        if sensor_name == 'imu':
+            self.last_imu_receive_time = now
+            self.imu_receive_times.append(now)
+            self._trim_receive_times(self.imu_receive_times, now)
+            if (stamp_time > 0.0 and self.last_imu_stamp_time is not None and
+                    stamp_time <= self.last_imu_stamp_time):
+                self.imu_nonmonotonic_count += 1
+            if stamp_time > 0.0:
+                self.last_imu_stamp_time = stamp_time
+            return
+
+        if sensor_name == 'gps':
+            self.last_gps_receive_time = now
+            self.gps_receive_times.append(now)
+            self._trim_receive_times(self.gps_receive_times, now)
+            if (stamp_time > 0.0 and self.last_gps_stamp_time is not None and
+                    stamp_time <= self.last_gps_stamp_time):
+                self.gps_nonmonotonic_count += 1
+            if stamp_time > 0.0:
+                self.last_gps_stamp_time = stamp_time
+
+    def _trim_receive_times(self, receive_times, now: float):
+        window = max(self.sensor_rate_window_sec, 0.1)
+        while receive_times and now - receive_times[0] > window:
+            del receive_times[0]
+
+    @staticmethod
+    def _sensor_rate(receive_times):
+        if len(receive_times) < 2:
+            return None
+        duration = receive_times[-1] - receive_times[0]
+        if duration <= 1e-9:
+            return None
+        return float(len(receive_times) - 1) / duration
+
+    @staticmethod
+    def _sensor_age(last_receive_time, now: float):
+        if last_receive_time is None:
+            return None
+        return max(now - last_receive_time, 0.0)
+
+    def _now_sec(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    @staticmethod
+    def _format_float(value) -> str:
+        if value is None:
+            return 'nan'
+        return f'{float(value):.6f}'
+
+    @staticmethod
+    def _kv(key: str, value: str) -> KeyValue:
+        item = KeyValue()
+        item.key = key
+        item.value = value
+        return item
+
+    @staticmethod
+    def _diagnostic_level_name(level: int) -> str:
+        level = GpsImuEkfNode._diagnostic_level_value(level)
+        names = {
+            DIAG_OK: 'OK',
+            DIAG_WARN: 'WARN',
+            DIAG_ERROR: 'ERROR',
+            DIAG_STALE: 'STALE',
+        }
+        return names.get(level, str(level))
+
+    @staticmethod
+    def _diagnostic_level_value(level) -> int:
+        if isinstance(level, bytes):
+            return int.from_bytes(level, byteorder='little', signed=False)
+        return int(level)
+
     def _set_initial_yaw(self, yaw: float):
         if self.initial_yaw is None:
             self.initial_yaw = yaw
@@ -459,7 +741,7 @@ class GpsImuEkfNode(Node):
             f'samples={sample_count}, elapsed={elapsed:.2f}s, '
             f'std_xy={std_xy:.3f} m, '
             f'lat={latitude:.9f}, lon={longitude:.9f}, alt={altitude:.3f}')
-        self.publish_state(msg.header.stamp)
+        self.latest_state_stamp = msg.header.stamp
 
     def _base_position_measurement(self, gps_delta: np.ndarray,
                                    yaw: float) -> np.ndarray:
@@ -522,9 +804,15 @@ def main(args=None):
     node = GpsImuEkfNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

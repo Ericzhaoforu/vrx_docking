@@ -6,10 +6,22 @@ gps_imu_ekf_node:
     imu_topic: /wamv/sensors/imu/imu/data
     state_topic: /safe_docking/state
     odom_topic: /safe_docking/odometry
+    health_topic: /safe_docking/ekf_health
 
     origin_frame: safe_docking/odom
     base_frame: wamv/wamv/base_link
     publish_tf: false
+    publish_rate_hz: 100.0
+    health_publish_rate_hz: 1.0
+    sensor_rate_window_sec: 3.0
+    imu_expected_rate_hz: 100.0
+    imu_min_rate_hz: 70.0
+    imu_stale_warn_sec: 0.5
+    imu_stale_error_sec: 5.0
+    gps_expected_rate_hz: 20.0
+    gps_min_rate_hz: 10.0
+    gps_stale_warn_sec: 1.0
+    gps_stale_error_sec: 5.0
     gps_body_x: -0.85
     gps_body_y: 0.0
 

@@ -15,6 +15,7 @@ def generate_launch_description():
         pkg_share, 'config', 'flatness_mpc_controller.yaml')
 
     params_file = LaunchConfiguration('params_file')
+    reference_source = LaunchConfiguration('reference_source')
     reference_name = LaunchConfiguration('reference_name')
     use_sim_time = LaunchConfiguration('use_sim_time')
     acados_source_dir = LaunchConfiguration('acados_source_dir')
@@ -25,11 +26,16 @@ def generate_launch_description():
             default_value=default_params,
             description='Parameter file for the flatness-MPC tracker.'),
         DeclareLaunchArgument(
+            'reference_source',
+            default_value='synthetic',
+            description='Reference source: synthetic or minco.'),
+        DeclareLaunchArgument(
             'reference_name',
             default_value='arc',
             description=(
-                'Feasible synthetic reference: hold, straight, arc, stop, '
-                'figure8, spiral, yaw.')),
+                'Reference scenario/name. Synthetic supports hold, straight, '
+                'arc, stop, figure8, spiral, yaw. MINCO validation should use '
+                'local_offset for the short local terminal-offset maneuver.')),
         DeclareLaunchArgument(
             'use_sim_time',
             default_value='True',
@@ -56,6 +62,7 @@ def generate_launch_description():
             parameters=[
                 params_file,
                 {
+                    'reference_source': reference_source,
                     'reference_name': reference_name,
                     'use_sim_time': use_sim_time,
                     'acados_source_dir': acados_source_dir,

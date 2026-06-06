@@ -29,6 +29,10 @@ except Exception:  # pragma: no cover - runtime dependency guard
 
 from .feasible_references import available_reference_names
 from .feasible_references import make_synthetic_reference
+from .minco_reference_generation import MincoLocalReferenceConfig
+from .minco_reference_generation import create_minco_local_reference
+from .minco_reference_generation import nominal_flat_acceleration_from_tau
+from .minco_reference_generation import select_boundary_acceleration
 from .usv_flatness import UsvModelParams
 from .usv_flatness import flat_to_body_velocity
 from .usv_flatness import generalized_force_to_thrust
@@ -141,8 +145,29 @@ class FlatnessMpcController(Node):
         self.declare_parameter('control_rate_hz', 5.0)
         self.declare_parameter('command_timeout_sec', 0.8)
 
+        self.declare_parameter('reference_source', 'synthetic')
         self.declare_parameter('reference_name', 'arc')
         self.declare_parameter('reference_dt', 0.2)
+        self.declare_parameter('minco_terminal_forward', 2.0)
+        self.declare_parameter('minco_terminal_lateral', 0.4)
+        self.declare_parameter('minco_terminal_yaw', 0.25)
+        self.declare_parameter('minco_piece_count', 2)
+        self.declare_parameter('minco_fixed_total_time', 8.0)
+        self.declare_parameter('minco_reference_speed', 0.6)
+        self.declare_parameter('minco_time_dilation', 1.5)
+        self.declare_parameter('minco_min_segment_time', 0.3)
+        self.declare_parameter('minco_smooth_weight', 1.0)
+        self.declare_parameter('minco_time_weight', 0.0)
+        self.declare_parameter('minco_max_iterations', 20)
+        self.declare_parameter('minco_tau_v_bar', 250.0)
+        self.declare_parameter('minco_velocity_bounds', [2.0, 0.5, 0.6])
+        self.declare_parameter('minco_acceleration_bounds', [0.9, 0.5, 0.8])
+        self.declare_parameter('minco_lambda_tau_v', 1.0)
+        self.declare_parameter('minco_lambda_velocity', 1.0)
+        self.declare_parameter('minco_lambda_acceleration', 1.0)
+        self.declare_parameter('minco_lambda_actuator', 10.0)
+        self.declare_parameter('minco_quadrature_order', 8)
+        self.declare_parameter('minco_penalty_mu', 20.0)
         self.declare_parameter('solver_backend', 'acados')
         self.declare_parameter('acados_source_dir', '/home/zjy/acados')
         self.declare_parameter(
@@ -162,6 +187,7 @@ class FlatnessMpcController(Node):
             'horizon_dt_sequence',
             [0.08, 0.08, 0.10, 0.12, 0.15, 0.20,
              0.25, 0.35, 0.45, 0.55, 0.70, 0.97])
+        self.declare_parameter('scale_running_cost_by_dt', True)
         self.declare_parameter('solver_max_iterations', 60)
         self.declare_parameter('solver_ftol', 1e-3)
         self.declare_parameter('accel_bound_xy', 0.9)
@@ -181,7 +207,6 @@ class FlatnessMpcController(Node):
         self.declare_parameter('q_delta_tau', 0.0002)
         self.declare_parameter('tau_v_slack_max', 250.0)
         self.declare_parameter('tau_v_slack_warm_start', 1.0)
-        self.declare_parameter('max_yaw_moment', 150.0)
         self.declare_parameter('constraint_violation_tolerance', 5e-3)
 
         self.declare_parameter('mass', 180.0)
@@ -202,8 +227,40 @@ class FlatnessMpcController(Node):
         self.debug_topic = self._str_param('debug_topic')
         self.control_period = 1.0 / max(self._float_param('control_rate_hz'), 0.1)
         self.command_timeout_sec = self._float_param('command_timeout_sec')
+        self.reference_source = self._str_param(
+            'reference_source').strip().lower()
         self.reference_name = self._str_param('reference_name')
         self.reference_dt = self._float_param('reference_dt')
+        self.minco_terminal_forward = self._float_param(
+            'minco_terminal_forward')
+        self.minco_terminal_lateral = self._float_param(
+            'minco_terminal_lateral')
+        self.minco_terminal_yaw = self._float_param('minco_terminal_yaw')
+        self.minco_piece_count = self._int_param('minco_piece_count')
+        self.minco_fixed_total_time = self._float_param(
+            'minco_fixed_total_time')
+        self.minco_reference_speed = self._float_param(
+            'minco_reference_speed')
+        self.minco_time_dilation = self._float_param('minco_time_dilation')
+        self.minco_min_segment_time = self._float_param(
+            'minco_min_segment_time')
+        self.minco_smooth_weight = self._float_param('minco_smooth_weight')
+        self.minco_time_weight = self._float_param('minco_time_weight')
+        self.minco_max_iterations = self._int_param('minco_max_iterations')
+        self.minco_tau_v_bar = self._float_param('minco_tau_v_bar')
+        self.minco_velocity_bounds = self._triple_param(
+            'minco_velocity_bounds', (2.0, 0.5, 0.6))
+        self.minco_acceleration_bounds = self._triple_param(
+            'minco_acceleration_bounds', (0.9, 0.5, 0.8))
+        self.minco_lambda_tau_v = self._float_param('minco_lambda_tau_v')
+        self.minco_lambda_velocity = self._float_param(
+            'minco_lambda_velocity')
+        self.minco_lambda_acceleration = self._float_param(
+            'minco_lambda_acceleration')
+        self.minco_lambda_actuator = self._float_param(
+            'minco_lambda_actuator')
+        self.minco_quadrature_order = self._int_param('minco_quadrature_order')
+        self.minco_penalty_mu = self._float_param('minco_penalty_mu')
         self.solver_backend = self._str_param('solver_backend').strip().lower()
         self.acados_source_dir = self._str_param('acados_source_dir')
         self.acados_codegen_dir = self._str_param('acados_codegen_dir')
@@ -222,6 +279,8 @@ class FlatnessMpcController(Node):
         self.horizon_offsets = np.concatenate(
             ([0.0], np.cumsum(self.horizon_dt_sequence)))
         self.horizon_node_weights = self.node_quadrature_weights()
+        self.scale_running_cost_by_dt = self._bool_param(
+            'scale_running_cost_by_dt')
         self.solver_max_iterations = self._int_param('solver_max_iterations')
         self.solver_ftol = self._float_param('solver_ftol')
         self.accel_bound_xy = self._float_param('accel_bound_xy')
@@ -229,7 +288,6 @@ class FlatnessMpcController(Node):
         self.tau_v_slack_max = self._float_param('tau_v_slack_max')
         self.tau_v_slack_warm_start = self._float_param(
             'tau_v_slack_warm_start')
-        self.max_yaw_moment = self._float_param('max_yaw_moment')
         self.constraint_violation_tolerance = self._float_param(
             'constraint_violation_tolerance')
 
@@ -274,6 +332,10 @@ class FlatnessMpcController(Node):
         self.acados_solver = None
         self.acados_ready = False
         self.last_tau = np.zeros(3, dtype=float)
+        self.last_applied_tau: Optional[np.ndarray] = None
+        self.last_mpc_z_ddot_pred: Optional[np.ndarray] = None
+        self.last_minco_reference = None
+        self.last_minco_reference_start_time: Optional[float] = None
         self.prev_left_thrust = 0.0
         self.prev_right_thrust = 0.0
         self.last_debug = {field: 0.0 for field in DEBUG_FIELDS}
@@ -291,8 +353,9 @@ class FlatnessMpcController(Node):
 
         available = ', '.join(available_reference_names(self.model_params))
         self.get_logger().info(
-            'Flatness MPC loaded. Synthetic reference='
-            f'{self.reference_name}; available references: {available}.')
+            'Flatness MPC loaded. reference_source='
+            f'{self.reference_source}, reference_name={self.reference_name}; '
+            f'available synthetic references: {available}.')
         self.configure_solver_backend()
 
     def _str_param(self, name: str) -> str:
@@ -300,6 +363,9 @@ class FlatnessMpcController(Node):
 
     def _float_param(self, name: str) -> float:
         return self.get_parameter(name).get_parameter_value().double_value
+
+    def _bool_param(self, name: str) -> bool:
+        return self.get_parameter(name).get_parameter_value().bool_value
 
     def _int_param(self, name: str) -> int:
         return self.get_parameter(name).get_parameter_value().integer_value
@@ -315,6 +381,12 @@ class FlatnessMpcController(Node):
                 if item.strip()
             ]
         return []
+
+    def _triple_param(self, name: str, default):
+        values = self._float_array_param(name)
+        if len(values) != 3:
+            return tuple(float(item) for item in default)
+        return tuple(float(item) for item in values)
 
     def normalized_horizon_dt_sequence(self):
         sequence = self._float_array_param('horizon_dt_sequence')
@@ -489,7 +561,6 @@ class FlatnessMpcController(Node):
         model.con_h_expr = ca.vertcat(
             left,
             right,
-            tau_r,
             tau_v_slack - tau_v,
             tau_v_slack + tau_v,
         )
@@ -544,14 +615,12 @@ class FlatnessMpcController(Node):
         ocp.constraints.lh = np.array([
             params.min_thrust,
             params.min_thrust,
-            -self.max_yaw_moment,
             0.0,
             0.0,
         ], dtype=float)
         ocp.constraints.uh = np.array([
             params.max_thrust,
             params.max_thrust,
-            self.max_yaw_moment,
             1e6,
             1e6,
         ], dtype=float)
@@ -575,7 +644,7 @@ class FlatnessMpcController(Node):
         os.makedirs(self.acados_codegen_dir, exist_ok=True)
         codegen_name = (
             'robotx_dynamics_rk4_mpc_const_tau_v_slack_'
-            f'tau_step_tau_r_bound_N{self.horizon_steps}_'
+            f'tau_step_thrust_bounds_N{self.horizon_steps}_'
             f'{self.acados_nlp_solver_type.lower()}')
         code_dir = os.path.join(self.acados_codegen_dir, codegen_name)
         ocp.code_gen_opts.code_export_directory = code_dir
@@ -621,12 +690,16 @@ class FlatnessMpcController(Node):
             self.publish_zero(FAIL_OPTIMIZER_FAILED, state, solve)
             return
 
+        self.last_mpc_z_ddot_pred = np.asarray(
+            solve.get('z_ddot_pred', np.empty((0, 3))), dtype=float)
         left_raw, right_raw = generalized_force_to_thrust(
             solve['tau'][0], solve['tau'][2], self.model_params)
         left_cmd, right_cmd = self.apply_thrust_limits(
             left_raw, right_raw, dt)
         tau_u_c, tau_r_c = thrust_to_generalized_force(
             left_cmd, right_cmd, self.model_params)
+        self.last_applied_tau = np.array(
+            [tau_u_c, 0.0, tau_r_c], dtype=float)
 
         self.publish_thrust(left_cmd, right_cmd)
         self.publish_command(left_cmd, right_cmd, solve['tau'])
@@ -653,6 +726,17 @@ class FlatnessMpcController(Node):
         }
 
     def create_reference(self, state, now: float) -> bool:
+        if self.reference_source == 'synthetic':
+            return self.create_synthetic_reference(state, now)
+        if self.reference_source == 'minco':
+            return self.create_minco_reference(state, now)
+        self.get_logger().error(
+            f'Unknown reference_source=[{self.reference_source}]. Expected '
+            'synthetic or minco.')
+        self.reference = None
+        return False
+
+    def create_synthetic_reference(self, state, now: float) -> bool:
         try:
             self.reference = make_synthetic_reference(
                 self.reference_name, state['z'], self.model_params,
@@ -668,6 +752,102 @@ class FlatnessMpcController(Node):
             f'duration={self.reference.duration:.2f}s, '
             f'diagnostics={self.reference.diagnostics}')
         return True
+
+    def create_minco_reference(self, state, now: float) -> bool:
+        boundary_acceleration = self.select_minco_boundary_acceleration(
+            state, now)
+        config = self.minco_reference_config()
+        try:
+            result = create_minco_local_reference(
+                f'minco_{self.reference_name}',
+                state['z'],
+                state['z_dot'],
+                boundary_acceleration,
+                self.model_params,
+                config,
+            )
+        except Exception as exc:
+            self.get_logger().error(f'Unable to create MINCO reference: {exc}')
+            self.reference = None
+            return False
+
+        self.reference = result.reference
+        self.reference_start_time = now
+        self.last_minco_reference = self.reference
+        self.last_minco_reference_start_time = now
+        self.get_logger().info(
+            f'Created MINCO reference [{self.reference.name}] '
+            f'duration={self.reference.duration:.2f}s, '
+            f'boundary_acceleration={result.boundary_acceleration_source}, '
+            f'diagnostics={self.reference.diagnostics}')
+        return True
+
+    def minco_reference_config(self) -> MincoLocalReferenceConfig:
+        fixed_total_time = (
+            None if self.minco_fixed_total_time <= 0.0
+            else float(self.minco_fixed_total_time))
+        return MincoLocalReferenceConfig(
+            terminal_offset_body=self.minco_terminal_offset_body(),
+            dt=self.reference_dt,
+            piece_count=max(int(self.minco_piece_count), 1),
+            fixed_total_time=fixed_total_time,
+            reference_speed=max(float(self.minco_reference_speed), 1e-3),
+            time_dilation=max(float(self.minco_time_dilation), 1.0),
+            min_segment_time=max(float(self.minco_min_segment_time), 1e-3),
+            smooth_weight=float(self.minco_smooth_weight),
+            time_weight=float(self.minco_time_weight),
+            max_iterations=max(int(self.minco_max_iterations), 1),
+            tau_v_bar=float(self.minco_tau_v_bar),
+            velocity_bounds=self.minco_velocity_bounds,
+            acceleration_bounds=self.minco_acceleration_bounds,
+            lambda_tau_v=float(self.minco_lambda_tau_v),
+            lambda_velocity=float(self.minco_lambda_velocity),
+            lambda_acceleration=float(self.minco_lambda_acceleration),
+            lambda_actuator=float(self.minco_lambda_actuator),
+            quadrature_order=max(int(self.minco_quadrature_order), 1),
+            penalty_mu=max(float(self.minco_penalty_mu), 1e-6),
+        )
+
+    def minco_terminal_offset_body(self):
+        name = self.reference_name.strip().lower()
+        forward = float(self.minco_terminal_forward)
+        lateral = float(self.minco_terminal_lateral)
+        yaw = float(self.minco_terminal_yaw)
+        if name == 'hold':
+            return (0.0, 0.0, 0.0)
+        if name in ('straight', 'stop'):
+            return (forward, 0.0, 0.0)
+        if name == 'yaw':
+            return (0.0, 0.0, yaw)
+        return (forward, lateral, yaw)
+
+    def select_minco_boundary_acceleration(self, state, now: float):
+        return select_boundary_acceleration(
+            state['z'],
+            state['z_dot'],
+            self.model_params,
+            previous_minco_z_ddot=self.previous_minco_acceleration(now),
+            previous_mpc_z_ddot=self.previous_mpc_acceleration(),
+            last_applied_tau=self.last_applied_tau,
+        )
+
+    def previous_minco_acceleration(self, now: float):
+        if (
+                self.last_minco_reference is None or
+                self.last_minco_reference_start_time is None):
+            return None
+        elapsed = max(float(now) - float(self.last_minco_reference_start_time), 0.0)
+        return np.asarray(
+            self.last_minco_reference.sample(elapsed)['z_ddot'], dtype=float)
+
+    def previous_mpc_acceleration(self):
+        if self.last_mpc_z_ddot_pred is None:
+            return None
+        z_ddot = np.asarray(self.last_mpc_z_ddot_pred, dtype=float)
+        if z_ddot.ndim != 2 or z_ddot.shape[1] != 3 or len(z_ddot) == 0:
+            return None
+        index = 1 if len(z_ddot) > 1 else 0
+        return np.asarray(z_ddot[index], dtype=float)
 
     def solve_mpc(self, state, elapsed: float):
         if self.solver_backend == 'acados':
@@ -884,12 +1064,16 @@ class FlatnessMpcController(Node):
             wrap_angle(float(item)) for item in z_pred[:, 2]
         ])
         z_dot_pred = x_pred[:, 3:6]
-        z_ddot_pred = np.zeros((self.horizon_steps + 1, 3), dtype=float)
         slack_pred = x_pred[:, 6]
         tau_pred = np.zeros((self.horizon_steps + 1, 3), dtype=float)
         tau_pred[:self.horizon_steps] = u_pred[:self.horizon_steps]
         if self.horizon_steps > 0:
             tau_pred[-1] = tau_pred[-2]
+        z_ddot_pred = np.asarray([
+            nominal_flat_acceleration_from_tau(
+                z_i, zd_i, tau_i, self.model_params)
+            for z_i, zd_i, tau_i in zip(z_pred, z_dot_pred, tau_pred)
+        ], dtype=float)
 
         constrained_tau = tau_pred[:self.horizon_steps]
         constrained_slack = slack_pred[:self.horizon_steps]
@@ -898,14 +1082,12 @@ class FlatnessMpcController(Node):
                 np.abs(constrained_tau[:, 1]) - constrained_slack, 0.0)))
             if len(constrained_tau) else 0.0)
         thrust_violation = self.max_thrust_violation(constrained_tau)
-        yaw_moment_violation = self.max_yaw_moment_violation(constrained_tau)
         acceptable_status = status in (0, 2)
         success = bool(
             acceptable_status and
             np.all(np.isfinite(tau_pred)) and
             lateral_violation <= self.constraint_violation_tolerance and
-            thrust_violation <= self.constraint_violation_tolerance and
-            yaw_moment_violation <= self.constraint_violation_tolerance)
+            thrust_violation <= self.constraint_violation_tolerance)
         if success:
             self.last_acados_x = x_pred
             self.last_acados_u = u_pred
@@ -960,13 +1142,6 @@ class FlatnessMpcController(Node):
                 0.0)
         return float(violation)
 
-    def max_yaw_moment_violation(self, tau_pred) -> float:
-        tau_pred = np.asarray(tau_pred, dtype=float)
-        if not len(tau_pred):
-            return 0.0
-        return float(max(np.max(np.abs(tau_pred[:, 2])) -
-                         self.max_yaw_moment, 0.0))
-
     def acados_stage_parameter(self, ref_z, ref_z_dot, weight_scale: float,
                                h_step: float = 1.0,
                                terminal: bool = False):
@@ -992,10 +1167,13 @@ class FlatnessMpcController(Node):
 
     def set_acados_references(self, horizon):
         for index in range(self.horizon_steps):
+            weight_scale = (
+                float(self.horizon_dt_sequence[index])
+                if self.scale_running_cost_by_dt else 1.0)
             params = self.acados_stage_parameter(
                 horizon['z'][index],
                 horizon['z_dot'][index],
-                float(self.horizon_dt_sequence[index]),
+                weight_scale,
                 h_step=float(self.horizon_dt_sequence[index]),
                 terminal=False)
             self.acados_solver.set(index, 'p', params)
@@ -1056,8 +1234,14 @@ class FlatnessMpcController(Node):
                 -self.tau_v_slack_max, self.tau_v_slack_max)
             u_guess[index, 2] = clamp(
                 float(u_guess[index, 2]),
-                -self.max_yaw_moment, self.max_yaw_moment)
+                -self.implicit_yaw_moment_limit(),
+                self.implicit_yaw_moment_limit())
             self.acados_solver.set(index, 'u', u_guess[index])
+
+    def implicit_yaw_moment_limit(self) -> float:
+        return (
+            self.model_params.thruster_half_spacing *
+            (self.model_params.max_thrust - self.model_params.min_thrust))
 
     def evaluate_prediction_cost(self, z, z_dot, tau, slack, horizon) -> float:
         cost = 0.0
@@ -1068,7 +1252,9 @@ class FlatnessMpcController(Node):
             vel_error = z_dot[index, :2] - horizon['z_dot'][index, :2]
             yaw_rate_error = z_dot[index, 2] - horizon['z_dot'][index, 2]
             tau_step = tau[index]
-            h = self.horizon_dt_sequence[index]
+            h = (
+                self.horizon_dt_sequence[index]
+                if self.scale_running_cost_by_dt else 1.0)
             cost += h * self.weights['position'] * float(pos_error @ pos_error)
             cost += h * self.weights['yaw'] * yaw_error * yaw_error
             cost += h * self.weights['velocity'] * float(vel_error @ vel_error)
@@ -1242,7 +1428,6 @@ class FlatnessMpcController(Node):
     def path_margin(self, decision, state):
         return np.concatenate([
             self.thrust_margin(decision, state),
-            self.yaw_moment_margin(decision, state),
             self.lateral_margin(decision, state),
         ])
 
@@ -1257,16 +1442,6 @@ class FlatnessMpcController(Node):
                 self.model_params.max_thrust - left,
                 right - self.model_params.min_thrust,
                 self.model_params.max_thrust - right,
-            ])
-        return np.asarray(margins, dtype=float)
-
-    def yaw_moment_margin(self, decision, state):
-        _, _, _, tau, _ = self.rollout_prediction(decision, state)
-        margins = []
-        for tau_step in tau:
-            margins.extend([
-                tau_step[2] + self.max_yaw_moment,
-                self.max_yaw_moment - tau_step[2],
             ])
         return np.asarray(margins, dtype=float)
 
@@ -1298,6 +1473,8 @@ class FlatnessMpcController(Node):
         self.prev_right_thrust = 0.0
         self.publish_thrust(0.0, 0.0)
         self.publish_command(0.0, 0.0, np.zeros(3, dtype=float))
+        if state is not None:
+            self.last_applied_tau = np.zeros(3, dtype=float)
         if state is not None:
             elapsed = 0.0
             if self.reference_start_time is not None:
