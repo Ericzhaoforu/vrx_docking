@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Optional
 
 import numpy as np
@@ -9,6 +10,14 @@ try:
     from scipy.optimize import minimize as scipy_minimize
 except Exception:  # pragma: no cover - runtime dependency guard
     scipy_minimize = None
+
+try:
+    import robotx_minco_cpp as _minco_cpp
+except Exception:  # pragma: no cover - optional compiled acceleration
+    try:
+        from . import _minco_cpp
+    except Exception:
+        _minco_cpp = None
 
 from .minco_s3nu import MINCO_S3NU
 from .minco_usv_penalties import MincoUsvDensePenalty
@@ -76,8 +85,6 @@ class MincoUsvOptimizer:
         initial_inPs=None,
         initial_ts=None,
     ) -> MincoUsvOptimizerResult:
-        if scipy_minimize is None:
-            raise RuntimeError("scipy.optimize is required for MINCO optimization.")
         head_pva, tail_pva = self._validate_pva(head_pva, tail_pva)
         if initial_inPs is None or initial_ts is None:
             inPs0, ts0 = self.initial_guess(head_pva, tail_pva)
@@ -104,10 +111,87 @@ class MincoUsvOptimizer:
             self.objective_and_gradient(x0, head_pva, tail_pva)
         )
 
+        cpp_context = self._cpp_context()
+        use_cpp_optimizer = (
+            _minco_cpp is not None and
+            hasattr(_minco_cpp, "minco_optimize_lbfgs") and
+            os.environ.get("ROBOTX_MINCO_OPTIMIZER_CPP", "1") != "0" and
+            os.environ.get("ROBOTX_MINCO_USE_CPP", "1") != "0")
+        if use_cpp_optimizer:
+            result = _minco_cpp.minco_optimize_lbfgs(
+                x0,
+                head_pva,
+                tail_pva,
+                cpp_context["params"],
+                cpp_context["optimizer"],
+                cpp_context["penalty"],
+            )
+            x_opt = np.asarray(result["variables"], dtype=float)
+            objective_after, grad_after, trajectory, penalty_eval = (
+                self.objective_and_gradient(x_opt, head_pva, tail_pva)
+            )
+            inPs, theta = self.unpack_variables(x_opt)
+            ts = self.theta_to_times(theta)
+            diagnostics = dict(penalty_eval.diagnostics)
+            result_diagnostics = dict(result.get("diagnostics", {}))
+            diagnostics.update(result_diagnostics)
+            diagnostics.update({
+                "optimizer_fun": float(result.get(
+                    "optimizer_fun", objective_after)),
+                "optimizer_grad_inf_norm": float(np.max(np.abs(grad_after))),
+                "optimizer_eval_count": float(result.get("eval_count", 0)),
+                "optimizer_nfev": float(result.get("eval_count", 0)),
+                "optimizer_njev": float(result.get("eval_count", 0)),
+                "optimizer_iterations": float(result.get("iterations", 0)),
+                "optimizer_status_code": float(result.get("status_code", 0)),
+            })
+            return MincoUsvOptimizerResult(
+                success=bool(result["success"]),
+                message=str(result["message"]),
+                objective_before=float(result.get(
+                    "objective_before", objective_before)),
+                objective_after=float(objective_after),
+                iterations=int(result.get("iterations", 0)),
+                inPs=inPs,
+                ts=ts,
+                theta=theta,
+                trajectory=trajectory,
+                diagnostics=diagnostics,
+            )
+
+        if scipy_minimize is None:
+            raise RuntimeError(
+                "scipy.optimize is required when the C++ LBFGS optimizer is unavailable."
+            )
+
+        use_cpp = (
+            _minco_cpp is not None and
+            os.environ.get("ROBOTX_MINCO_USE_CPP", "1") != "0")
+        evaluation_count = 0
+
+        def objective_with_gradient(x):
+            nonlocal evaluation_count
+            evaluation_count += 1
+            if use_cpp:
+                result = _minco_cpp.minco_objective_gradient(
+                    np.asarray(x, dtype=float),
+                    head_pva,
+                    tail_pva,
+                    cpp_context["params"],
+                    cpp_context["optimizer"],
+                    cpp_context["penalty"],
+                )
+                return float(result["objective"]), np.asarray(
+                    result["gradient"], dtype=float)
+            objective, gradient, _trajectory, _penalty_eval = (
+                self.objective_and_gradient(x, head_pva, tail_pva)
+            )
+            return objective, gradient
+
         result = scipy_minimize(
-            lambda x: self.objective_and_gradient(x, head_pva, tail_pva)[0],
+            objective_with_gradient,
             x0,
-            jac=lambda x: self.objective_and_gradient(x, head_pva, tail_pva)[1],
+            jac=True,
             method="L-BFGS-B",
             bounds=self.variable_bounds(head_pva, tail_pva),
             options={
@@ -127,6 +211,9 @@ class MincoUsvOptimizer:
         diagnostics.update({
             "optimizer_fun": float(result.fun),
             "optimizer_grad_inf_norm": float(np.max(np.abs(result.jac))),
+            "optimizer_eval_count": float(evaluation_count),
+            "optimizer_nfev": float(getattr(result, "nfev", 0)),
+            "optimizer_njev": float(getattr(result, "njev", 0)),
         })
         return MincoUsvOptimizerResult(
             success=bool(result.success),
@@ -179,6 +266,70 @@ class MincoUsvOptimizer:
 
         gradient = self.pack_variables(grad_inPs, grad_theta)
         return float(objective), gradient, trajectory, penalty_eval
+
+    def objective_and_gradient_cpp(self, variables, head_pva, tail_pva):
+        """C++ equivalent of objective_and_gradient for tests and profiling."""
+        if _minco_cpp is None:
+            raise RuntimeError("The compiled _minco_cpp extension is unavailable.")
+        context = self._cpp_context()
+        result = _minco_cpp.minco_objective_gradient(
+            np.asarray(variables, dtype=float),
+            np.asarray(head_pva, dtype=float),
+            np.asarray(tail_pva, dtype=float),
+            context["params"],
+            context["optimizer"],
+            context["penalty"],
+        )
+        return float(result["objective"]), np.asarray(result["gradient"], dtype=float)
+
+    def _cpp_context(self):
+        params = self.penalty.config.params
+        return {
+            "params": {
+                "mass": float(params.mass),
+                "iz": float(params.iz),
+                "du": float(params.du),
+                "duu": float(params.duu),
+                "dv": float(params.dv),
+                "dvv": float(params.dvv),
+                "dr": float(params.dr),
+                "drr": float(params.drr),
+                "thruster_half_spacing": float(params.thruster_half_spacing),
+                "min_thrust": float(params.min_thrust),
+                "max_thrust": float(params.max_thrust),
+            },
+            "optimizer": {
+                "piece_count": int(self.config.piece_count),
+                "fixed_total_time_enabled": self.config.fixed_total_time is not None,
+                "fixed_total_time": (
+                    0.0 if self.config.fixed_total_time is None
+                    else float(self.config.fixed_total_time)),
+                "reference_speed": float(self.config.reference_speed),
+                "time_dilation": float(self.config.time_dilation),
+                "min_segment_time": float(self.config.min_segment_time),
+                "smooth_weight": float(self.config.smooth_weight),
+                "time_weight": float(self.config.time_weight),
+                "max_iterations": int(self.config.max_iterations),
+                "gradient_tolerance": float(self.config.gradient_tolerance),
+                "function_tolerance": float(self.config.function_tolerance),
+                "spatial_margin": float(self.config.spatial_margin),
+                "yaw_margin": float(self.config.yaw_margin),
+                "theta_bound": float(self.config.theta_bound),
+            },
+            "penalty": {
+                "tau_v_bar": float(self.penalty.config.tau_v_bar),
+                "velocity_bounds": list(self.penalty.config.velocity_bounds),
+                "acceleration_bounds": list(
+                    self.penalty.config.acceleration_bounds),
+                "lambda_tau_v": float(self.penalty.config.lambda_tau_v),
+                "lambda_velocity": float(self.penalty.config.lambda_velocity),
+                "lambda_acceleration": float(
+                    self.penalty.config.lambda_acceleration),
+                "lambda_actuator": float(self.penalty.config.lambda_actuator),
+                "quadrature_order": int(self.penalty.config.quadrature_order),
+                "penalty_mu": float(self.penalty.config.penalty_mu),
+            },
+        }
 
     def initial_guess(self, head_pva, tail_pva):
         head_pva, tail_pva = self._validate_pva(head_pva, tail_pva)

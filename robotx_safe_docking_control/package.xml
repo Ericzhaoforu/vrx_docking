@@ -12,6 +12,8 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>robotx_safe_docking_minco_cpp</exec_depend>
+  <exec_depend>robotx_safe_docking_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>

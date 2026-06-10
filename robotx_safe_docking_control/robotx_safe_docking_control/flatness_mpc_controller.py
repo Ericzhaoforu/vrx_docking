@@ -7,7 +7,12 @@ from typing import Optional
 import numpy as np
 import rclpy
 from nav_msgs.msg import Odometry
+from robotx_safe_docking_msgs.msg import MincoExecutionStatus
+from robotx_safe_docking_msgs.msg import MincoTrajectory
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy
+from rclpy.qos import QoSProfile
+from rclpy.qos import ReliabilityPolicy
 from std_msgs.msg import Float64
 from std_msgs.msg import Float64MultiArray
 
@@ -29,10 +34,18 @@ except Exception:  # pragma: no cover - runtime dependency guard
 
 from .feasible_references import available_reference_names
 from .feasible_references import make_synthetic_reference
+from .feasible_references import ReferenceHandover
+from .minco_reference_generation import BoundaryAccelerationSelection
 from .minco_reference_generation import MincoLocalReferenceConfig
 from .minco_reference_generation import create_minco_local_reference
 from .minco_reference_generation import nominal_flat_acceleration_from_tau
 from .minco_reference_generation import select_boundary_acceleration
+from .minco_message_reference import MincoCoefficientReference
+from .minco_reference_manager import ActiveMincoReferenceManager
+from .minco_reference_manager import REF_REJECT_OPTIMIZER
+from .usv_lattice_frontend import parse_circular_obstacles
+from .usv_lattice_frontend import plan_lattice_terminal
+from .usv_lattice_frontend import UsvLatticeConfig
 from .usv_flatness import UsvModelParams
 from .usv_flatness import flat_to_body_velocity
 from .usv_flatness import generalized_force_to_thrust
@@ -44,6 +57,10 @@ from .usv_flatness import wrap_angle
 DEBUG_FIELDS = [
     'elapsed',
     'reference_duration',
+    'reference_handover_active',
+    'reference_handover_alpha',
+    'reference_commit_active',
+    'reference_commit_remaining',
     'solver_success',
     'solver_backend',
     'solver_status',
@@ -91,6 +108,76 @@ DEBUG_FIELDS = [
     'allocation_tau_u_residual',
     'allocation_tau_r_residual',
     'scenario_complete',
+    'reference_candidate_count',
+    'reference_swap_count',
+    'reference_reject_count',
+    'reference_last_swap',
+    'reference_last_reject',
+    'reference_last_reject_reason',
+    'reference_mode_id',
+    'reference_boundary_accel_source',
+    'reference_solver_failure_after_swap_count',
+    'reference_start_z_error',
+    'reference_start_z_dot_error',
+    'reference_start_z_ddot_error',
+    'reference_pva_residual',
+    'reference_continuity_residual',
+    'reference_max_abs_tau_v',
+    'reference_rms_tau_v',
+    'reference_velocity_violation',
+    'reference_acceleration_violation',
+    'reference_actuator_bound_violation',
+    'reference_penalty_total',
+    'reference_last_swap_thrust_jump',
+    'reference_max_swap_thrust_jump',
+    'reference_time_since_swap',
+    'reference_should_replan',
+    'reference_should_replan_reason',
+    'reference_should_replan_time_since_last',
+    'reference_should_replan_progress',
+    'reference_should_replan_yaw_progress',
+    'reference_should_replan_goal_distance',
+    'reference_should_replan_goal_yaw_error',
+    'frontend_mode',
+    'frontend_goal_distance',
+    'frontend_goal_inside_horizon',
+    'frontend_goal_position_error',
+    'frontend_goal_yaw_error',
+    'frontend_selected_depth',
+    'frontend_collision_free',
+    'frontend_terminal_stop',
+    'frontend_candidate_count',
+    'frontend_collision_reject_count',
+    'frontend_infeasible_reject_count',
+    'frontend_selected_cost',
+    'frontend_expansion_count',
+    'frontend_analytic_attempted',
+    'frontend_analytic_attempt_count',
+    'frontend_analytic_success',
+    'frontend_reach_goal',
+    'frontend_reach_horizon',
+    'frontend_tau_v_bar',
+    'frontend_control_discretization',
+    'frontend_terminal_x',
+    'frontend_terminal_y',
+    'frontend_terminal_psi',
+    'frontend_global_goal_x',
+    'frontend_global_goal_y',
+    'frontend_global_goal_psi',
+    'frontend_local_goal_x',
+    'frontend_local_goal_y',
+    'frontend_local_goal_psi',
+    'active_reference_elapsed',
+    'active_x_ref',
+    'active_y_ref',
+    'active_psi_ref',
+    'active_x_dot_ref',
+    'active_y_dot_ref',
+    'active_psi_dot_ref',
+    'active_tau_u_ref',
+    'active_tau_v_ref',
+    'active_tau_r_ref',
+    'controller_time',
 ]
 
 
@@ -148,6 +235,18 @@ class FlatnessMpcController(Node):
         self.declare_parameter('reference_source', 'synthetic')
         self.declare_parameter('reference_name', 'arc')
         self.declare_parameter('reference_dt', 0.2)
+        self.declare_parameter(
+            'minco_trajectory_topic', '/safe_docking/minco_trajectory')
+        self.declare_parameter(
+            'minco_execution_status_topic',
+            '/safe_docking/minco_execution_status')
+        self.declare_parameter('minco_execution_start_delay', 0.0)
+        self.declare_parameter(
+            'minco_topic_accept_start_position_tolerance', 0.75)
+        self.declare_parameter(
+            'minco_topic_accept_start_yaw_tolerance', 0.70)
+        self.declare_parameter(
+            'minco_topic_accept_start_velocity_tolerance', 1.00)
         self.declare_parameter('minco_terminal_forward', 2.0)
         self.declare_parameter('minco_terminal_lateral', 0.4)
         self.declare_parameter('minco_terminal_yaw', 0.25)
@@ -158,8 +257,8 @@ class FlatnessMpcController(Node):
         self.declare_parameter('minco_min_segment_time', 0.3)
         self.declare_parameter('minco_smooth_weight', 1.0)
         self.declare_parameter('minco_time_weight', 0.0)
-        self.declare_parameter('minco_max_iterations', 20)
-        self.declare_parameter('minco_tau_v_bar', 250.0)
+        self.declare_parameter('minco_max_iterations', 200)
+        self.declare_parameter('minco_tau_v_bar', 12.0)
         self.declare_parameter('minco_velocity_bounds', [2.0, 0.5, 0.6])
         self.declare_parameter('minco_acceleration_bounds', [0.9, 0.5, 0.8])
         self.declare_parameter('minco_lambda_tau_v', 1.0)
@@ -168,6 +267,49 @@ class FlatnessMpcController(Node):
         self.declare_parameter('minco_lambda_actuator', 10.0)
         self.declare_parameter('minco_quadrature_order', 8)
         self.declare_parameter('minco_penalty_mu', 20.0)
+        self.declare_parameter('minco_replan_enabled', False)
+        self.declare_parameter('minco_replan_check_rate_hz', 1.0)
+        self.declare_parameter('minco_replan_progress_distance', 0.5)
+        self.declare_parameter('minco_replan_progress_yaw', 0.12)
+        self.declare_parameter('minco_no_replan_goal_distance', 0.5)
+        self.declare_parameter('minco_no_replan_goal_yaw', 0.08)
+        self.declare_parameter('minco_replan_modes', 'straight,gentle_arc')
+        self.declare_parameter('minco_accept_pva_residual', 1e-5)
+        self.declare_parameter('minco_accept_start_z_tolerance', 5e-2)
+        self.declare_parameter('minco_accept_start_z_dot_tolerance', 5e-2)
+        self.declare_parameter('minco_accept_tau_v_bound', 0.0)
+        self.declare_parameter('minco_accept_velocity_violation', 5e-2)
+        self.declare_parameter('minco_accept_acceleration_violation', 5e-2)
+        self.declare_parameter('minco_accept_actuator_violation', 2.0)
+        self.declare_parameter('minco_accept_penalty_total', 1e7)
+        self.declare_parameter('minco_handover_duration', 0.0)
+        self.declare_parameter('frontend_goal_z', [3.0, 6.0, 2.4])
+        self.declare_parameter('frontend_primitive_duration', 2.0)
+        self.declare_parameter('frontend_primitive_dt', 0.25)
+        self.declare_parameter('frontend_check_num', 5)
+        self.declare_parameter('frontend_search_depth', 24)
+        self.declare_parameter('frontend_max_expansions', 2000)
+        self.declare_parameter('frontend_control_discretization', 1)
+        self.declare_parameter('frontend_sample_thrust_limit', 0.0)
+        self.declare_parameter('frontend_minco_piece_count_min', 3)
+        self.declare_parameter('frontend_minco_piece_count_max', 8)
+        self.declare_parameter('frontend_flat_accel_bounds', [0.5, 0.5, 0.12])
+        self.declare_parameter('frontend_flat_velocity_bounds', [2.0, 2.0, 0.4])
+        self.declare_parameter('frontend_time_weight', 1.0)
+        self.declare_parameter('frontend_heuristic_weight', 3.0)
+        self.declare_parameter('frontend_tau_v_bar', 12.0)
+        self.declare_parameter('frontend_max_local_goal_distance', 5.0)
+        self.declare_parameter('frontend_local_goal_speed', 0.45)
+        self.declare_parameter('frontend_final_goal_radius', 0.8)
+        self.declare_parameter('frontend_goal_tolerance', 0.15)
+        self.declare_parameter('frontend_yaw_tolerance', 0.12)
+        self.declare_parameter('frontend_obstacle_margin', 0.5)
+        self.declare_parameter('frontend_grid_resolution_xy', 0.25)
+        self.declare_parameter('frontend_grid_resolution_yaw', 0.25)
+        self.declare_parameter('frontend_grid_resolution_vxy', 0.25)
+        self.declare_parameter('frontend_grid_resolution_yaw_rate', 0.05)
+        self.declare_parameter('frontend_analytic_expansion', True)
+        self.declare_parameter('frontend_obstacles', '')
         self.declare_parameter('solver_backend', 'acados')
         self.declare_parameter('acados_source_dir', '/home/zjy/acados')
         self.declare_parameter(
@@ -231,6 +373,21 @@ class FlatnessMpcController(Node):
             'reference_source').strip().lower()
         self.reference_name = self._str_param('reference_name')
         self.reference_dt = self._float_param('reference_dt')
+        self.minco_trajectory_topic = self._str_param(
+            'minco_trajectory_topic')
+        self.minco_execution_status_topic = self._str_param(
+            'minco_execution_status_topic')
+        self.minco_execution_start_delay = max(
+            self._float_param('minco_execution_start_delay'), 0.0)
+        self.minco_topic_accept_start_position_tolerance = max(
+            self._float_param(
+                'minco_topic_accept_start_position_tolerance'), 0.0)
+        self.minco_topic_accept_start_yaw_tolerance = max(
+            self._float_param(
+                'minco_topic_accept_start_yaw_tolerance'), 0.0)
+        self.minco_topic_accept_start_velocity_tolerance = max(
+            self._float_param(
+                'minco_topic_accept_start_velocity_tolerance'), 0.0)
         self.minco_terminal_forward = self._float_param(
             'minco_terminal_forward')
         self.minco_terminal_lateral = self._float_param(
@@ -261,6 +418,91 @@ class FlatnessMpcController(Node):
             'minco_lambda_actuator')
         self.minco_quadrature_order = self._int_param('minco_quadrature_order')
         self.minco_penalty_mu = self._float_param('minco_penalty_mu')
+        minco_accept_tau_v_bound = self._float_param(
+            'minco_accept_tau_v_bound')
+        if minco_accept_tau_v_bound <= 0.0:
+            minco_accept_tau_v_bound = self.minco_tau_v_bar
+        self.minco_reference_manager = ActiveMincoReferenceManager.from_values(
+            enabled=self._bool_param('minco_replan_enabled'),
+            check_rate_hz=self._float_param('minco_replan_check_rate_hz'),
+            progress_distance=self._float_param(
+                'minco_replan_progress_distance'),
+            progress_yaw=self._float_param('minco_replan_progress_yaw'),
+            no_replan_goal_distance=self._float_param(
+                'minco_no_replan_goal_distance'),
+            no_replan_goal_yaw=self._float_param('minco_no_replan_goal_yaw'),
+            modes=self._csv_param('minco_replan_modes'),
+            pva_residual_tolerance=self._float_param(
+                'minco_accept_pva_residual'),
+            start_z_tolerance=self._float_param(
+                'minco_accept_start_z_tolerance'),
+            start_z_dot_tolerance=self._float_param(
+                'minco_accept_start_z_dot_tolerance'),
+            tau_v_diagnostic_bound=minco_accept_tau_v_bound,
+            velocity_violation_tolerance=self._float_param(
+                'minco_accept_velocity_violation'),
+            acceleration_violation_tolerance=self._float_param(
+                'minco_accept_acceleration_violation'),
+            actuator_violation_tolerance=self._float_param(
+                'minco_accept_actuator_violation'),
+            penalty_total_tolerance=self._float_param(
+                'minco_accept_penalty_total'),
+        )
+        self.minco_handover_duration = max(
+            self._float_param('minco_handover_duration'), 0.0)
+        frontend_tau_v_bar = self._float_param('frontend_tau_v_bar')
+        if frontend_tau_v_bar <= 0.0:
+            frontend_tau_v_bar = self.minco_tau_v_bar
+        self.frontend_config = UsvLatticeConfig(
+            goal_z=tuple(self._triple_param(
+                'frontend_goal_z', (6.0, 12.0, 2.4))),
+            primitive_duration=max(
+                self._float_param('frontend_primitive_duration'), 1e-3),
+            primitive_dt=max(self._float_param('frontend_primitive_dt'), 1e-3),
+            check_num=max(self._int_param('frontend_check_num'), 1),
+            search_depth=max(self._int_param('frontend_search_depth'), 1),
+            max_expansions=max(self._int_param('frontend_max_expansions'), 1),
+            control_discretization=max(
+                self._int_param('frontend_control_discretization'), 1),
+            sample_thrust_limit=max(
+                self._float_param('frontend_sample_thrust_limit'), 0.0),
+            minco_piece_count=max(int(self.minco_piece_count), 1),
+            minco_piece_count_min=max(
+                self._int_param('frontend_minco_piece_count_min'), 1),
+            minco_piece_count_max=max(
+                self._int_param('frontend_minco_piece_count_max'), 1),
+            flat_accel_bounds=tuple(self._triple_param(
+                'frontend_flat_accel_bounds', (0.5, 0.5, 0.12))),
+            flat_velocity_bounds=tuple(self._triple_param(
+                'frontend_flat_velocity_bounds', (2.0, 2.0, 0.4))),
+            time_weight=max(self._float_param('frontend_time_weight'), 1e-9),
+            heuristic_weight=max(
+                self._float_param('frontend_heuristic_weight'), 0.0),
+            tau_v_bar=max(float(frontend_tau_v_bar), 0.0),
+            max_local_goal_distance=max(
+                self._float_param('frontend_max_local_goal_distance'), 0.1),
+            local_goal_speed=max(
+                self._float_param('frontend_local_goal_speed'), 0.0),
+            final_goal_radius=max(
+                self._float_param('frontend_final_goal_radius'), 0.05),
+            goal_tolerance=max(
+                self._float_param('frontend_goal_tolerance'), 0.01),
+            yaw_tolerance=max(
+                self._float_param('frontend_yaw_tolerance'), 0.01),
+            obstacle_margin=max(
+                self._float_param('frontend_obstacle_margin'), 0.0),
+            obstacles=parse_circular_obstacles(
+                self._str_param('frontend_obstacles')),
+            grid_resolution_xy=max(
+                self._float_param('frontend_grid_resolution_xy'), 1e-6),
+            grid_resolution_yaw=max(
+                self._float_param('frontend_grid_resolution_yaw'), 1e-6),
+            grid_resolution_vxy=max(
+                self._float_param('frontend_grid_resolution_vxy'), 1e-6),
+            grid_resolution_yaw_rate=max(
+                self._float_param('frontend_grid_resolution_yaw_rate'), 1e-6),
+            analytic_expansion=self._bool_param('frontend_analytic_expansion'),
+        )
         self.solver_backend = self._str_param('solver_backend').strip().lower()
         self.acados_source_dir = self._str_param('acados_source_dir')
         self.acados_codegen_dir = self._str_param('acados_codegen_dir')
@@ -323,6 +565,8 @@ class FlatnessMpcController(Node):
         )
 
         self.latest_odom: Optional[Odometry] = None
+        self.latest_minco_trajectory: Optional[MincoTrajectory] = None
+        self.latest_minco_trajectory_id: Optional[int] = None
         self.last_control_time: Optional[float] = None
         self.reference_start_time: Optional[float] = None
         self.reference = None
@@ -348,7 +592,17 @@ class FlatnessMpcController(Node):
             Float64MultiArray, self.command_topic, 10)
         self.debug_pub = self.create_publisher(
             Float64MultiArray, self.debug_topic, 10)
+        self.minco_execution_status_pub = self.create_publisher(
+            MincoExecutionStatus, self.minco_execution_status_topic, 10)
+        minco_qos = QoSProfile(depth=1)
+        minco_qos.reliability = ReliabilityPolicy.RELIABLE
+        minco_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self.create_subscription(Odometry, self.odom_topic, self.on_odom, 10)
+        self.create_subscription(
+            MincoTrajectory,
+            self.minco_trajectory_topic,
+            self.on_minco_trajectory,
+            minco_qos)
         self.create_timer(self.control_period, self.on_timer)
 
         available = ', '.join(available_reference_names(self.model_params))
@@ -377,6 +631,18 @@ class FlatnessMpcController(Node):
         if value.string_value:
             return [
                 float(item.strip())
+                for item in value.string_value.split(',')
+                if item.strip()
+            ]
+        return []
+
+    def _csv_param(self, name: str):
+        value = self.get_parameter(name).get_parameter_value()
+        if len(value.string_array_value):
+            return [str(item) for item in value.string_array_value]
+        if value.string_value:
+            return [
+                item.strip()
                 for item in value.string_value.split(',')
                 if item.strip()
             ]
@@ -655,6 +921,113 @@ class FlatnessMpcController(Node):
     def on_odom(self, msg: Odometry):
         self.latest_odom = msg
 
+    def on_minco_trajectory(self, msg: MincoTrajectory):
+        if self.reference_source != 'minco_topic':
+            self.latest_minco_trajectory = msg
+            return
+        now = self.get_clock().now().nanoseconds * 1e-9
+        try:
+            reference = MincoCoefficientReference.from_msg(
+                msg, self.model_params)
+        except Exception as exc:
+            self.get_logger().warn(
+                f'Ignoring invalid MINCO trajectory message: {exc}')
+            self.publish_minco_execution_status(
+                int(msg.trajectory_id),
+                MincoExecutionStatus.STATE_REJECTED,
+                False,
+                False,
+                f'invalid trajectory: {exc}',
+                now,
+                now)
+            return
+        if self.latest_minco_trajectory_id == int(msg.trajectory_id):
+            self.latest_minco_trajectory = msg
+            return
+        self.latest_minco_trajectory = msg
+        self.latest_minco_trajectory_id = int(msg.trajectory_id)
+
+        if self.latest_odom is None:
+            self.get_logger().warn(
+                'Rejecting external MINCO trajectory because no odometry is '
+                'available yet.')
+            self.publish_minco_execution_status(
+                reference.trajectory_id,
+                MincoExecutionStatus.STATE_REJECTED,
+                False,
+                False,
+                'no odometry',
+                now,
+                now)
+            return
+
+        state = self.extract_state(self.latest_odom)
+        start_sample = reference.sample(0.0)
+        start_z = np.asarray(start_sample['z'], dtype=float).reshape(3)
+        start_z_dot = np.asarray(start_sample['z_dot'], dtype=float).reshape(3)
+        start_error = start_z - state['z']
+        start_error[2] = wrap_angle(float(start_error[2]))
+        start_position_error = float(np.linalg.norm(start_error[:2]))
+        start_yaw_error = abs(float(start_error[2]))
+        start_z_dot_error = float(np.linalg.norm(start_z_dot - state['z_dot']))
+        if (
+                start_position_error >
+                self.minco_topic_accept_start_position_tolerance or
+                start_yaw_error >
+                self.minco_topic_accept_start_yaw_tolerance or
+                start_z_dot_error >
+                self.minco_topic_accept_start_velocity_tolerance):
+            reason = (
+                'start mismatch: '
+                f'pos={start_position_error:.3f} m, '
+                f'yaw={start_yaw_error:.3f} rad, '
+                f'zdot={start_z_dot_error:.3f}')
+            self.get_logger().warn(
+                f'Rejecting external MINCO trajectory '
+                f'id={reference.trajectory_id}: {reason}')
+            self.publish_minco_execution_status(
+                reference.trajectory_id,
+                MincoExecutionStatus.STATE_REJECTED,
+                False,
+                False,
+                reason,
+                now,
+                now,
+                state,
+                reference,
+                start_position_error,
+                start_z_dot_error)
+            return
+
+        self.reference = reference
+        self.reference_start_time = (
+            max(reference.start_time, now + self.minco_execution_start_delay)
+            if reference.start_time > 0.0
+            else now + self.minco_execution_start_delay)
+        self.last_minco_reference = reference
+        self.last_minco_reference_start_time = self.reference_start_time
+        self.last_solution = None
+        self.last_acados_x = None
+        self.last_acados_u = None
+        self.publish_minco_execution_status(
+            reference.trajectory_id,
+            MincoExecutionStatus.STATE_EXECUTING,
+            True,
+            True,
+            'accepted',
+            now,
+            self.reference_start_time,
+            state,
+            reference,
+            start_position_error,
+            start_z_dot_error)
+        self.get_logger().info(
+            'Accepted external MINCO trajectory '
+            f'id={reference.trajectory_id}, duration={reference.duration:.2f}s, '
+            f'start_time={self.reference_start_time:.3f}, '
+            f'start_error={start_position_error:.3f} m, '
+            f'start_yaw_error={start_yaw_error:.3f} rad.')
+
     def on_timer(self):
         now = self.get_clock().now().nanoseconds * 1e-9
         if self.latest_odom is None:
@@ -675,15 +1048,19 @@ class FlatnessMpcController(Node):
         dt = min(dt, 0.5)
         self.last_control_time = now
 
+        self.minco_reference_manager.begin_cycle()
         state = self.extract_state(self.latest_odom)
         if self.reference is None:
             if not self.create_reference(state, now):
                 self.publish_zero(FAIL_NO_REFERENCE)
                 return
+        elif self.reference_source == 'minco':
+            self.maybe_replan_minco_reference(state, now)
 
         elapsed = max(now - self.reference_start_time, 0.0)
         solve = self.solve_mpc(state, elapsed)
         if not solve['success']:
+            self.minco_reference_manager.record_solver_after_swap(False)
             self.get_logger().warn(
                 'MPC solve failed; publishing zero thrust. '
                 f"reason={solve['message']}")
@@ -700,12 +1077,15 @@ class FlatnessMpcController(Node):
             left_cmd, right_cmd, self.model_params)
         self.last_applied_tau = np.array(
             [tau_u_c, 0.0, tau_r_c], dtype=float)
+        self.minco_reference_manager.record_solver_after_swap(True)
+        self.minco_reference_manager.record_swap_thrust(left_cmd, right_cmd)
 
         self.publish_thrust(left_cmd, right_cmd)
         self.publish_command(left_cmd, right_cmd, solve['tau'])
         self.publish_debug(
             state, elapsed, solve, left_raw, right_raw, left_cmd, right_cmd,
             tau_u_c, tau_r_c, FAIL_OK)
+        self.publish_current_minco_execution_status(state, elapsed)
         self.last_tau = solve['tau']
 
     def extract_state(self, odom: Odometry):
@@ -725,14 +1105,104 @@ class FlatnessMpcController(Node):
             'nu': flat_to_body_velocity(z, z_dot),
         }
 
+    @staticmethod
+    def assign_time(stamp, time_sec: float):
+        clamped = max(float(time_sec), 0.0)
+        stamp.sec = int(math.floor(clamped))
+        stamp.nanosec = int(round(
+            (clamped - float(stamp.sec)) * 1_000_000_000.0))
+        if stamp.nanosec >= 1_000_000_000:
+            stamp.sec += 1
+            stamp.nanosec -= 1_000_000_000
+
+    def publish_minco_execution_status(
+            self, trajectory_id: int, status_state: int, accepted: bool,
+            executing: bool, reason: str, now: float,
+            execution_start_time: float, state=None, reference=None,
+            start_z_error: float = float('nan'),
+            start_z_dot_error: float = float('nan')):
+        msg = MincoExecutionStatus()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'map'
+        msg.trajectory_id = int(trajectory_id)
+        msg.state = int(status_state)
+        msg.accepted = bool(accepted)
+        msg.executing = bool(executing)
+        msg.reason = str(reason)
+        self.assign_time(msg.execution_start_time, execution_start_time)
+        msg.elapsed = max(float(now) - float(execution_start_time), 0.0)
+
+        current_z = np.zeros(3, dtype=float)
+        current_z_dot = np.zeros(3, dtype=float)
+        if state is not None:
+            current_z = np.asarray(state['z'], dtype=float).reshape(3)
+            current_z_dot = np.asarray(
+                state['z_dot'], dtype=float).reshape(3)
+
+        reference_z = np.zeros(3, dtype=float)
+        reference_z_dot = np.zeros(3, dtype=float)
+        if reference is not None:
+            sample = reference.sample(msg.elapsed)
+            reference_z = np.asarray(sample['z'], dtype=float).reshape(3)
+            reference_z_dot = np.asarray(
+                sample['z_dot'], dtype=float).reshape(3)
+
+        tracking_position_error = float('nan')
+        tracking_yaw_error = float('nan')
+        if state is not None and reference is not None:
+            error = reference_z - current_z
+            error[2] = wrap_angle(float(error[2]))
+            tracking_position_error = float(np.linalg.norm(error[:2]))
+            tracking_yaw_error = abs(float(error[2]))
+
+        msg.current_z = [float(value) for value in current_z]
+        msg.current_z_dot = [float(value) for value in current_z_dot]
+        msg.reference_z = [float(value) for value in reference_z]
+        msg.reference_z_dot = [float(value) for value in reference_z_dot]
+        msg.start_z_error = float(start_z_error)
+        msg.start_z_dot_error = float(start_z_dot_error)
+        msg.tracking_position_error = tracking_position_error
+        msg.tracking_yaw_error = tracking_yaw_error
+        self.minco_execution_status_pub.publish(msg)
+
+    def publish_current_minco_execution_status(self, state, elapsed: float):
+        if self.reference_source != 'minco_topic':
+            return
+        if self.reference is None or self.reference_start_time is None:
+            return
+        now = self.get_clock().now().nanoseconds * 1e-9
+        trajectory_id = int(
+            getattr(self.reference, 'trajectory_id', 0))
+        self.publish_minco_execution_status(
+            trajectory_id,
+            MincoExecutionStatus.STATE_EXECUTING,
+            True,
+            True,
+            'executing',
+            now,
+            self.reference_start_time,
+            state,
+            self.reference,
+            0.0,
+            0.0)
+
     def create_reference(self, state, now: float) -> bool:
         if self.reference_source == 'synthetic':
             return self.create_synthetic_reference(state, now)
         if self.reference_source == 'minco':
             return self.create_minco_reference(state, now)
+        if self.reference_source == 'minco_topic':
+            if self.reference is not None:
+                return True
+            if self.latest_minco_trajectory is not None:
+                self.on_minco_trajectory(self.latest_minco_trajectory)
+                return self.reference is not None
+            self.get_logger().warn(
+                f'Waiting for MINCO trajectory on {self.minco_trajectory_topic}.')
+            return False
         self.get_logger().error(
             f'Unknown reference_source=[{self.reference_source}]. Expected '
-            'synthetic or minco.')
+            'synthetic, minco, or minco_topic.')
         self.reference = None
         return False
 
@@ -754,40 +1224,148 @@ class FlatnessMpcController(Node):
         return True
 
     def create_minco_reference(self, state, now: float) -> bool:
-        boundary_acceleration = self.select_minco_boundary_acceleration(
-            state, now)
-        config = self.minco_reference_config()
+        mode = self.minco_reference_manager.next_mode(self.reference_name)
+        return self.install_minco_reference(state, now, mode, is_replan=False)
+
+    def maybe_replan_minco_reference(self, state, now: float):
+        goal_z = (
+            self.frontend_config.goal_z
+            if self.uses_lattice_frontend(self.reference_name)
+            else None)
+        if not self.minco_reference_manager.should_replan(
+                now, self.reference_start_time, self.reference, goal_z=goal_z):
+            return
+        mode = self.minco_reference_manager.next_mode(self.reference_name)
+        self.minco_reference_manager.mark_replan_attempt(now)
+        if not self.install_minco_reference(state, now, mode, is_replan=True):
+            self.get_logger().warn(
+                'Rejected online MINCO candidate; continuing active '
+                f'reference. reason_code='
+                f'{self.minco_reference_manager.last_reject_reason:.0f}')
+
+    def install_minco_reference(
+            self, state, now: float, mode: str, is_replan: bool) -> bool:
+        plan_state, boundary_acceleration = self.minco_planning_boundary(
+            state, now, is_replan)
+        config = self.minco_reference_config(mode)
+        frontend_plan = None
+        if self.uses_lattice_frontend(mode):
+            frontend_plan = plan_lattice_terminal(
+                plan_state['z'], plan_state['z_dot'], self.model_params,
+                self.frontend_config)
+            if not frontend_plan.accepted:
+                self.minco_reference_manager.record_optimizer_failure(
+                    REF_REJECT_OPTIMIZER)
+                self.get_logger().warn(
+                    'USV lattice front end failed to produce a candidate: '
+                    f'mode={mode}, diagnostics={frontend_plan.diagnostics}')
+                if not is_replan:
+                    self.reference = None
+                return False
+            config.terminal_z = tuple(
+                float(item) for item in frontend_plan.terminal_z)
+            config.terminal_z_dot = tuple(
+                float(item) for item in frontend_plan.terminal_z_dot)
+            config.terminal_z_ddot = tuple(
+                float(item) for item in frontend_plan.terminal_z_ddot)
+            config.initial_inPs = frontend_plan.initial_inPs
+            config.initial_ts = frontend_plan.initial_ts
+            if frontend_plan.initial_ts is not None:
+                config.piece_count = int(len(frontend_plan.initial_ts))
+                config.fixed_total_time = max(
+                    float(np.sum(frontend_plan.initial_ts)),
+                    float(config.piece_count) * float(config.min_segment_time),
+                )
         try:
             result = create_minco_local_reference(
-                f'minco_{self.reference_name}',
-                state['z'],
-                state['z_dot'],
+                f'minco_{mode}',
+                plan_state['z'],
+                plan_state['z_dot'],
                 boundary_acceleration,
                 self.model_params,
                 config,
             )
         except Exception as exc:
+            self.minco_reference_manager.record_optimizer_failure(
+                REF_REJECT_OPTIMIZER)
             self.get_logger().error(f'Unable to create MINCO reference: {exc}')
-            self.reference = None
+            if not is_replan:
+                self.reference = None
+            return False
+        if frontend_plan is not None:
+            result.reference.diagnostics.update(frontend_plan.diagnostics)
+
+        validation = self.minco_reference_manager.validate(
+            result, plan_state, boundary_acceleration)
+        if not validation.accepted:
+            self.get_logger().warn(
+                'MINCO candidate failed acceptance gates: '
+                f'mode={mode}, reason_code={validation.reason:.0f}, '
+                f'metrics={validation.metrics}')
+            if not is_replan:
+                self.reference = None
             return False
 
-        self.reference = result.reference
-        self.reference_start_time = now
-        self.last_minco_reference = self.reference
-        self.last_minco_reference_start_time = now
+        new_reference = result.reference
+        commit_now = self.get_clock().now().nanoseconds * 1e-9
+        self.reference = new_reference
+        self.reference_start_time = commit_now
+        self.last_minco_reference = new_reference
+        self.last_minco_reference_start_time = commit_now
+        if is_replan:
+            self.last_solution = None
+        self.minco_reference_manager.accept(
+            now=commit_now,
+            mode=mode,
+            left_before=self.prev_left_thrust,
+            right_before=self.prev_right_thrust,
+            is_initial=not is_replan,
+        )
         self.get_logger().info(
             f'Created MINCO reference [{self.reference.name}] '
             f'duration={self.reference.duration:.2f}s, '
             f'boundary_acceleration={result.boundary_acceleration_source}, '
+            f'is_replan={is_replan}, immediate_switch=True, '
             f'diagnostics={self.reference.diagnostics}')
         return True
 
-    def minco_reference_config(self) -> MincoLocalReferenceConfig:
+    @staticmethod
+    def state_from_reference_sample(sample):
+        return {
+            'z': np.asarray(sample['z'], dtype=float).reshape(3),
+            'z_dot': np.asarray(sample['z_dot'], dtype=float).reshape(3),
+            'nu': np.asarray(sample['nu'], dtype=float).reshape(3),
+        }
+
+    def minco_planning_boundary(self, state, now: float, is_replan: bool):
+        if (
+                is_replan and self.reference is not None and
+                self.reference_start_time is not None):
+            elapsed = max(float(now) - float(self.reference_start_time), 0.0)
+            sample = self.reference.sample(elapsed)
+            plan_state = self.state_from_reference_sample(sample)
+            return (
+                plan_state,
+                BoundaryAccelerationSelection(
+                    z_ddot=np.asarray(sample['z_ddot'], dtype=float).reshape(3),
+                    source='active_reference',
+                ),
+            )
+        return (
+            state,
+            self.select_minco_boundary_acceleration(state, now),
+        )
+
+    @staticmethod
+    def uses_lattice_frontend(mode: str) -> bool:
+        return mode.strip().lower() in ('goal_lattice', 'lattice', 'goal')
+
+    def minco_reference_config(self, mode: str | None = None) -> MincoLocalReferenceConfig:
         fixed_total_time = (
             None if self.minco_fixed_total_time <= 0.0
             else float(self.minco_fixed_total_time))
         return MincoLocalReferenceConfig(
-            terminal_offset_body=self.minco_terminal_offset_body(),
+            terminal_offset_body=self.minco_terminal_offset_body(mode),
             dt=self.reference_dt,
             piece_count=max(int(self.minco_piece_count), 1),
             fixed_total_time=fixed_total_time,
@@ -808,8 +1386,10 @@ class FlatnessMpcController(Node):
             penalty_mu=max(float(self.minco_penalty_mu), 1e-6),
         )
 
-    def minco_terminal_offset_body(self):
-        name = self.reference_name.strip().lower()
+    def minco_terminal_offset_body(self, mode: str | None = None):
+        name = (
+            mode.strip().lower()
+            if mode is not None else self.reference_name.strip().lower())
         forward = float(self.minco_terminal_forward)
         lateral = float(self.minco_terminal_lateral)
         yaw = float(self.minco_terminal_yaw)
@@ -819,6 +1399,8 @@ class FlatnessMpcController(Node):
             return (forward, 0.0, 0.0)
         if name == 'yaw':
             return (0.0, 0.0, yaw)
+        if name in ('gentle_arc', 'arc', 'local_offset'):
+            return (forward, lateral, yaw)
         return (forward, lateral, yaw)
 
     def select_minco_boundary_acceleration(self, state, now: float):
@@ -828,7 +1410,6 @@ class FlatnessMpcController(Node):
             self.model_params,
             previous_minco_z_ddot=self.previous_minco_acceleration(now),
             previous_mpc_z_ddot=self.previous_mpc_acceleration(),
-            last_applied_tau=self.last_applied_tau,
         )
 
     def previous_minco_acceleration(self, now: float):
@@ -1521,6 +2102,37 @@ class FlatnessMpcController(Node):
         ]
         self.command_pub.publish(msg)
 
+    def external_minco_reference_debug_values(self) -> dict[str, float]:
+        if not isinstance(self.reference, MincoCoefficientReference):
+            return {}
+        diagnostics = dict(getattr(self.reference, 'diagnostics', {}))
+        terminal = np.asarray(
+            self.reference.sample(self.reference.duration)['z'],
+            dtype=float).reshape(3)
+        return {
+            'reference_max_abs_tau_v': float(
+                diagnostics.get('max_abs_tau_v', 0.0)),
+            'reference_rms_tau_v': float(
+                diagnostics.get('rms_tau_v', 0.0)),
+            'reference_velocity_violation': float(
+                diagnostics.get('velocity_violation', 0.0)),
+            'reference_acceleration_violation': float(
+                diagnostics.get('acceleration_violation', 0.0)),
+            'reference_actuator_bound_violation': float(
+                diagnostics.get('actuator_bound_violation', 0.0)),
+            'reference_penalty_total': float(
+                diagnostics.get('minco_penalty_total', 0.0)),
+            'frontend_mode': 5.0,
+            'frontend_selected_depth': float(len(self.reference.segment_times)),
+            'frontend_collision_free': 1.0,
+            'frontend_terminal_x': float(terminal[0]),
+            'frontend_terminal_y': float(terminal[1]),
+            'frontend_terminal_psi': float(terminal[2]),
+            'frontend_local_goal_x': float(terminal[0]),
+            'frontend_local_goal_y': float(terminal[1]),
+            'frontend_local_goal_psi': float(terminal[2]),
+        }
+
     def publish_debug(self, state, elapsed: float, solve,
                       left_raw: float, right_raw: float,
                       left_cmd: float, right_cmd: float,
@@ -1541,14 +2153,35 @@ class FlatnessMpcController(Node):
         ref = np.asarray(solve['reference'], dtype=float)
         ref_dot = np.asarray(solve['reference_dot'], dtype=float)
         terminal_ref = np.asarray(solve['terminal_reference'], dtype=float)
+        active_elapsed = float(elapsed)
+        if self.reference is not None:
+            active_sample = self.reference.sample(active_elapsed)
+            active_ref = np.asarray(active_sample['z'], dtype=float).reshape(3)
+            active_ref_dot = np.asarray(
+                active_sample['z_dot'], dtype=float).reshape(3)
+            active_tau = np.asarray(active_sample['tau'], dtype=float).reshape(3)
+        else:
+            active_ref = ref
+            active_ref_dot = ref_dot
+            active_tau = tau
         e = ref - state['z']
         e[2] = wrap_angle(float(e[2]))
         saturated = (
             abs(left_raw - left_cmd) > 1e-6 or
             abs(right_raw - right_cmd) > 1e-6)
+        handover_active = (
+            isinstance(self.reference, ReferenceHandover) and
+            self.reference.is_handover_active(elapsed))
         msg_dict = {
             'elapsed': float(elapsed),
             'reference_duration': self.reference.duration if self.reference else 0.0,
+            'reference_handover_active': 1.0 if handover_active else 0.0,
+            'reference_handover_alpha': (
+                self.reference.blend_alpha(elapsed)
+                if isinstance(self.reference, ReferenceHandover)
+                else 1.0),
+            'reference_commit_active': 0.0,
+            'reference_commit_remaining': 0.0,
             'solver_success': 1.0 if solve['success'] else 0.0,
             'solver_backend': float(solve.get('backend', -1.0)),
             'solver_status': float(solve.get('status', 0.0)),
@@ -1603,6 +2236,22 @@ class FlatnessMpcController(Node):
             'allocation_tau_r_residual': float(tau[2] - tau_r_c),
             'scenario_complete': float(solve['scenario_complete']),
         }
+        now = self.get_clock().now().nanoseconds * 1e-9
+        msg_dict.update(self.minco_reference_manager.debug_values(now))
+        msg_dict.update(self.external_minco_reference_debug_values())
+        msg_dict.update({
+            'active_reference_elapsed': active_elapsed,
+            'active_x_ref': float(active_ref[0]),
+            'active_y_ref': float(active_ref[1]),
+            'active_psi_ref': float(active_ref[2]),
+            'active_x_dot_ref': float(active_ref_dot[0]),
+            'active_y_dot_ref': float(active_ref_dot[1]),
+            'active_psi_dot_ref': float(active_ref_dot[2]),
+            'active_tau_u_ref': float(active_tau[0]),
+            'active_tau_v_ref': float(active_tau[1]),
+            'active_tau_r_ref': float(active_tau[2]),
+            'controller_time': now,
+        })
         self.last_debug = msg_dict
         msg = Float64MultiArray()
         msg.data = [msg_dict[field] for field in DEBUG_FIELDS]

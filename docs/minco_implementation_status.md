@@ -21,19 +21,34 @@ This module must produce a `FeasibleReference`-compatible local trajectory for t
 - [x] Phase 7: Integration with existing NMPC using `reference_source := minco`
 - [x] Phase 8: Gazebo/VRX closed-loop validation
 - [x] Phase 9: Analytic dense-penalty gradients and tight `tau_v` continuation sweep
+- [ ] Phase 10: Online MINCO replanning without obstacle constraints
 
 ## Last completed phase
 Phase 9: Analytic dense-penalty gradients and tight `tau_v` continuation sweep.
 
 ## Current integration status
 
-- MINCO is available as runtime one-shot local reference generation through
+- MINCO is available as one-shot runtime local reference generation through
   `reference_source := minco`.
-- The controller creates the MINCO reference once when the active reference is
-  `None`; the NMPC then tracks that fixed reference online.
-- Continuous online MINCO replanning is not implemented yet. Missing pieces are
-  replan triggers, previous-MINCO warm start, continuation scheduling during
-  runtime, safe reference replacement, and failed-replan handling.
+- Online replanning has moved to the topic-based stack:
+  `robotx_safe_docking_planning/minco_replanner_node` publishes strict MINCO
+  coefficients on `/safe_docking/minco_trajectory`, and the NMPC controller
+  accepts them with `reference_source := minco_topic`.
+- The controller publishes `/safe_docking/minco_execution_status` so the
+  planner can wait for an explicit acceptance / rejection instead of assuming
+  that a published trajectory has started executing.
+- The current `goal_lattice` front end rolls out differential-thrust motion
+  primitives through the nominal underactuated USV model with `tau_v = 0`,
+  ranks them with Fast-Planner-style `g + w_h h`, optionally uses analytic
+  expansion when the real global goal is inside the horizon, and seeds strict
+  MINCO with the selected primitive chain.
+- Obstacles are empty by default. Circular obstacle rejection exists for
+  simulation experiments only; perception, ESDF, and local-map integration are
+  still future work.
+- Closed-loop NMPC tracking of accepted MINCO references is stable in the
+  latest tests, but the online replanner is not yet a robust global-goal
+  planner. Some terminal conditions track the active local reference while not
+  reaching the requested global goal within the test window.
 - Dense penalty gradients are now analytic at the quadrature node and
   coefficient/time levels. Finite differences are retained only for tests and
   audit utilities.
@@ -971,6 +986,724 @@ Interpretation:
 - The current runtime integration still uses one-shot MINCO reference
   generation. Online MINCO replanning remains future work.
 
+## Phase 10 online replanning attempt
+
+Date: 2026-06-06.
+
+Objective:
+
+- implement online MINCO replanning without obstacle constraints;
+- keep the existing RK4 NMPC tracker;
+- do not add front-end planning, local maps, obstacle costs, NN residuals, or
+  PID fallback;
+- validate in Gazebo/VRX with periodic reference replacement.
+
+Implemented:
+
+- `robotx_safe_docking_control/robotx_safe_docking_control/minco_reference_manager.py`
+  with an active reference manager for candidate validation, swap counting,
+  rejection counting, reference diagnostics, and swap-thrust jump tracking.
+- Controller integration in
+  `robotx_safe_docking_control/robotx_safe_docking_control/flatness_mpc_controller.py`:
+  - generate an initial MINCO reference when `reference_source := minco`;
+  - optionally generate periodic online candidates;
+  - use current estimated `z` and `z_dot` as the new boundary state;
+  - use previous MINCO acceleration at current time as the preferred boundary
+    acceleration, then previous NMPC predicted acceleration, then zero;
+  - accept only references that pass PVA, start-continuity, `tau_v`, velocity,
+    acceleration, actuator-bound, and total-penalty gates;
+  - fail safe by keeping the old reference on candidate rejection;
+  - preserve the shifted acados primal warm start across accepted swaps after
+    the warm-start handover probe below; the legacy SLSQP warm start is still
+    cleared because it is tied to the previous reference time base.
+- Local terminal candidates:
+  - straight surge-ahead terminal stop;
+  - gentle arc terminal stop.
+- Recorder metrics for:
+  - NMPC solver success fraction;
+  - reference candidate, swap, and reject counts;
+  - RMS tracking error and terminal error;
+  - thrust saturation fraction;
+  - maximum thrust jump at reference swap;
+  - accepted-reference `max_abs_tau_v` and `rms_tau_v`.
+
+Focused repair attempts:
+
+1. Initial online replanning accepted references with `max_abs_tau_v` near
+   19-21 N. The NMPC produced acados status-4 failures after swaps.
+2. The mode scheduler was changed so rejected candidates do not repeat the same
+   mode forever, and the acceptance diagnostic bound was tightened. The run
+   still produced status-4 failures after accepted references.
+3. Replans were made more conservative:
+   - terminal forward offset: `1.5 m`;
+   - terminal lateral offset: `0.25 m`;
+   - terminal yaw offset: `0.15 rad`;
+   - fixed MINCO total time: `10.0 s`;
+   - replan initial delay: `5.0 s`;
+   - replan period: `6.0 s`;
+   - acceptance bound: `max_abs_tau_v <= 8.0 N`.
+   Rejected-candidate metrics were also prevented from overwriting
+   active-reference metrics.
+
+Phase 10 check commands:
+
+```bash
+python3 -m py_compile \
+  robotx_safe_docking_control/robotx_safe_docking_control/minco_reference_manager.py \
+  robotx_safe_docking_control/robotx_safe_docking_control/minco_reference_generation.py \
+  robotx_safe_docking_control/robotx_safe_docking_control/flatness_mpc_controller.py \
+  scripts/record_flatness_mpc_performance.py
+```
+
+Result: passed.
+
+```bash
+PYTHONPATH=/home/zjy/vrx_docking/robotx_safe_docking_control python3 - <<'PY'
+import importlib.util
+from pathlib import Path
+path = Path('robotx_safe_docking_control/test/test_minco_reference_manager.py')
+spec = importlib.util.spec_from_file_location('test_minco_reference_manager', path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.test_manager_accepts_continuous_feasible_candidate()
+module.test_manager_rejects_candidate_above_tau_v_bound()
+module.test_rejected_candidate_does_not_replace_active_metrics()
+print('manual manager tests ok')
+PY
+```
+
+Result:
+
+```text
+manual manager tests ok
+```
+
+```bash
+colcon build --packages-select robotx_safe_docking_control \
+  --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
+```
+
+Result: passed, with the existing setuptools `tests_require` warning.
+
+Final Gazebo/VRX run:
+
+- output directory:
+  `output/minco_online_replan_no_obstacles_repair3_20260606/`
+- duration: `75 s`;
+- controller launch:
+
+```bash
+ros2 launch robotx_safe_docking_control flatness_mpc_controller.launch.py \
+  reference_source:=minco \
+  reference_name:=online \
+  minco_replan_enabled:=True \
+  minco_replan_period:=6.0 \
+  use_sim_time:=True
+```
+
+Recorder metrics:
+
+| Metric | Value |
+| --- | ---: |
+| solver success fraction | `0.9993265993265993` |
+| reference candidate count | `10` |
+| reference swap count | `9` |
+| rejected candidate count | `0` |
+| RMS reference distance error | `0.11180740703151833 m` |
+| RMS reference yaw error | `0.07893903828903642 rad` |
+| final terminal distance error | `0.34072523322180215 m` |
+| final terminal yaw error | `0.0573545831643305 rad` |
+| final speed | `0.3247350884172215 m/s` |
+| thrust saturation fraction | `0.0011784511784511784` |
+| max thrust command | `99.99999920277224 N` |
+| max thrust jump at swap | `48.00000000000182 N` |
+| accepted max `abs(tau_v)` | `5.057937613472136 N` |
+| accepted max RMS `tau_v` | `2.949247040411945 N` |
+| accepted max start `z` error | `0.0` |
+| accepted max start `z_dot` error | `1.389512421408389e-16` |
+| mean solve time | `20.635404929056957 ms` |
+| max solve time | `37.96920599415898 ms` |
+
+Important failure observation:
+
+- The final run still produced an acados status-4 failure after the first
+  accepted `gentle_arc` swap:
+
+```text
+MPC solve failed; publishing zero thrust. reason=acados status 4 after reset retry
+```
+
+The recorder reported `reference_solver_failure_after_swap_count = 0` because
+that counter only covers the first solve immediately after a swap. The raw
+controller log shows a delayed failure while tracking the new active reference,
+so the phase does not satisfy the requested criterion "no solver failure
+triggered by reference swap."
+
+Phase 10 conclusion:
+
+- Start continuity passed: accepted references had essentially zero start
+  `z` and `z_dot` error.
+- Accepted references met the diagnostic `tau_v`, velocity, acceleration, and
+  actuator gates.
+- Solver success fraction and thrust saturation fraction met the numerical pass
+  criteria.
+- The no-solver-failure-after-swap criterion did not pass. Per the three-repair
+  failure policy, stop here and treat online MINCO replanning as implemented
+  but not validated.
+
+Failure analysis:
+
+- The accepted references are nominally feasible under the MINCO flatness
+  diagnostics, but the NMPC can still enter an acados minimum-step failure after
+  a reference replacement.
+- The most likely issue is not the MINCO boundary continuity itself: PVA and
+  start-continuity residuals were small. The failure appears to be caused by
+  solver conditioning and warm-start disruption after replacing the active
+  time base and reference horizon.
+- Resetting the NMPC warm start avoids stale trajectories but also removes
+  useful primal information. Keeping it risks warm-starting toward the previous
+  reference. A better swap strategy probably needs reference blending or a
+  projected warm start onto the new MINCO reference, not another simple
+  terminal-offset retune.
+- The current delayed-failure metric is too narrow. Future validation should
+  count solver failures during a configurable post-swap window, not only the
+  first solve after a swap.
+
+Recommended next work:
+
+- Add a post-swap solver-failure monitoring window to the reference manager.
+- Add a smooth reference handover policy: blend old and new references for a
+  short interval, or shift/project the previous NMPC prediction onto the new
+  MINCO horizon.
+- Add an explicit acceptance gate on predicted NMPC solvability for the
+  candidate horizon, if the solve-time budget allows.
+- Keep obstacle constraints, front-end planning, local maps, and NN residuals
+  out of this phase until no-obstacle online replanning is stable.
+
+### Warm-start handover probe
+
+Date: 2026-06-06.
+
+After the three focused repair attempts, the user requested one additional
+handover experiment. The narrow change was to keep the shifted acados warm
+start across accepted MINCO reference swaps instead of clearing
+`last_acados_x` and `last_acados_u` in `install_minco_reference(...)`. The
+controller still clears the legacy SLSQP `last_solution` on a swap.
+
+Hypothesis:
+
+- The accepted MINCO references are continuous in `z` and `z_dot`, so the
+  previous acados solution should be a better initial guess than a cold-started
+  horizon, as long as it is shifted forward by one shooting node.
+
+Validation commands:
+
+```bash
+python3 -m py_compile \
+  robotx_safe_docking_control/robotx_safe_docking_control/flatness_mpc_controller.py \
+  robotx_safe_docking_control/robotx_safe_docking_control/minco_reference_manager.py \
+  scripts/record_flatness_mpc_performance.py
+
+PYTHONPATH=/home/zjy/vrx_docking/robotx_safe_docking_control python3 - <<'PY'
+import importlib.util
+from pathlib import Path
+path = Path('robotx_safe_docking_control/test/test_minco_reference_manager.py')
+spec = importlib.util.spec_from_file_location('test_minco_reference_manager', path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.test_manager_accepts_continuous_feasible_candidate()
+module.test_manager_rejects_candidate_above_tau_v_bound()
+module.test_rejected_candidate_does_not_replace_active_metrics()
+print('manual manager tests ok')
+PY
+
+colcon build --packages-select robotx_safe_docking_control \
+  --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
+```
+
+All checks passed, with only the existing setuptools `tests_require` warning in
+the package build.
+
+Gazebo/VRX run:
+
+- output directory:
+  `output/minco_online_replan_warm_handover_20260606/`
+- duration: `75 s`;
+- launch:
+
+```bash
+ros2 launch robotx_safe_docking_control flatness_mpc_controller.launch.py \
+  reference_source:=minco \
+  reference_name:=online \
+  minco_replan_enabled:=True \
+  minco_replan_period:=6.0 \
+  use_sim_time:=True
+```
+
+Recorder metrics:
+
+| Metric | Value |
+| --- | ---: |
+| solver success fraction | `0.9958342012080816` |
+| reference candidate count | `8` |
+| reference swap count | `7` |
+| rejected candidate count | `0` |
+| RMS reference distance error | `0.10793415691511019 m` |
+| RMS reference yaw error | `0.0754269365910186 rad` |
+| final terminal distance error | `0.2095209549936 m` |
+| final terminal yaw error | `0.0001271650471710295 rad` |
+| final speed | `0.3057463429878193 m/s` |
+| thrust saturation fraction | `0.00041657987919183504` |
+| max thrust command | `99.999999999795 N` |
+| max thrust jump at swap | `48.00000000000182 N` |
+| accepted max `abs(tau_v)` | `5.005099710219159 N` |
+| accepted max RMS `tau_v` | `2.8867904892980913 N` |
+| accepted max start `z` error | `0.0` |
+| accepted max start `z_dot` error | `7.97406927610739e-17` |
+| NMPC max predicted `abs(tau_v)` | `0.04724330545083365 N` |
+| NMPC max predicted `tau_v` slack | `0.04724332277461446 N` |
+| mean solve time | `26.370796394738868 ms` |
+| max solve time | `534.3775850487873 ms` |
+
+Result:
+
+- The first `gentle_arc` swap no longer caused the immediate acados status-4
+  failure seen in the previous repair run. This is evidence that preserving the
+  shifted acados warm start helps the handover.
+- The run still produced a delayed acados status-4 event after a later
+  `gentle_arc` swap. The recorder rows showed the failure at
+  `reference_swap_count = 5`, `reference_mode_id = 2`, and
+  `reference_time_since_swap = 5.952 s`, with the active accepted reference
+  diagnostics `max_abs_tau_v = 4.284 N` and `rms_tau_v = 2.372 N`.
+- Terminal accuracy improved versus the repair-3 run, but the phase still does
+  not pass because the "no solver failure triggered by reference swap"
+  criterion remains unproven and a delayed post-swap failure was observed.
+
+Updated interpretation:
+
+- Warm-start handover is useful but incomplete. It reduces the first-swap
+  instability and improves terminal accuracy, but it does not guarantee
+  horizon feasibility after a changed reference time base.
+- The next focused fix should be a real reference handover policy rather than
+  only a warm-start policy: blend the old and new references over a short
+  interval, or run a candidate dry solve before accepting the swap.
+- The validation metric should count solver failures during a post-swap window,
+  for example `0-8 s` after each accepted reference, not only the first solve.
+
+### Reference handover probe
+
+Date: 2026-06-06.
+
+Implemented:
+
+- `ReferenceHandover` in
+  `robotx_safe_docking_control/robotx_safe_docking_control/feasible_references.py`.
+- Accepted online MINCO replans now expose a blended active reference when
+  `minco_handover_duration > 0`:
+  - at handover time `t = 0`, the NMPC sees the previous active reference
+    sampled at the swap time;
+  - at `t >= minco_handover_duration`, the NMPC sees the newly accepted MINCO
+    reference directly;
+  - during the handover window, `z`, `z_dot`, `z_ddot`, body velocity,
+    generalized force, and allocated thrust are blended with a smooth-step
+    weight. Yaw uses wrapped shortest-angle interpolation.
+- Added debug fields:
+  - `reference_handover_active`;
+  - `reference_handover_alpha`.
+- Added launch/config parameter:
+  - `minco_handover_duration`, default `2.0 s`.
+
+Unit/static checks:
+
+```bash
+python3 -m py_compile \
+  robotx_safe_docking_control/robotx_safe_docking_control/feasible_references.py \
+  robotx_safe_docking_control/robotx_safe_docking_control/flatness_mpc_controller.py \
+  robotx_safe_docking_control/robotx_safe_docking_control/minco_reference_manager.py \
+  scripts/record_flatness_mpc_performance.py
+
+PYTHONPATH=/home/zjy/vrx_docking/robotx_safe_docking_control \
+  python3 -m pytest -q \
+  robotx_safe_docking_control/test/test_reference_handover.py \
+  robotx_safe_docking_control/test/test_minco_reference_manager.py
+
+colcon build --packages-select robotx_safe_docking_control \
+  --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
+```
+
+Results:
+
+- `5 passed`;
+- package build passed with only the existing setuptools `tests_require`
+  warning.
+
+Gazebo/VRX 2-second handover run:
+
+- output directory:
+  `output/minco_online_replan_reference_handover_20260606/`
+- recorder duration: `75 s`;
+- launch:
+
+```bash
+ros2 launch robotx_safe_docking_control flatness_mpc_controller.launch.py \
+  reference_source:=minco \
+  reference_name:=online \
+  minco_replan_enabled:=True \
+  minco_replan_period:=6.0 \
+  minco_handover_duration:=2.0 \
+  use_sim_time:=True
+```
+
+Recorder metrics:
+
+| Metric | Value |
+| --- | ---: |
+| solver success fraction | `1.0` |
+| reference candidate count | `9` |
+| reference swap count | `8` |
+| rejected candidate count | `0` |
+| RMS reference distance error | `0.1210637503495509 m` |
+| RMS reference yaw error | `0.07422609199600189 rad` |
+| final terminal distance error | `0.33990542688289904 m` |
+| final terminal yaw error | `0.042786659674674654 rad` |
+| final speed | `0.13087369319991962 m/s` |
+| thrust saturation fraction | `0.0` |
+| max thrust command | `99.99988312844101 N` |
+| max thrust jump at swap | `39.42404043180884 N` |
+| accepted max `abs(tau_v)` | `5.207036656689583 N` |
+| accepted max RMS `tau_v` | `3.4679631516342884 N` |
+| mean solve time | `20.004508438986775 ms` |
+| max solve time | `48.67178702261299 ms` |
+
+Interpretation:
+
+- The 75-second recorder window passed the numerical criteria and had no
+  recorded solver failures.
+- The swap thrust jump was lower than the warm-start-only run
+  (`39.42 N` vs `48.00 N`).
+- Terminal speed improved (`0.131 m/s` vs `0.306 m/s`), but terminal distance
+  was worse than the warm-start-only run (`0.340 m` vs `0.210 m`).
+- Leaving the controller running after the recorder window still produced a
+  delayed acados status-4 event around `98 s` after controller start, after a
+  later `gentle_arc` swap. Therefore this is an improvement in the local
+  measured window, not a full validation.
+
+Additional 4-second handover probe:
+
+- `minco_handover_duration:=4.0` was tested to match the full NMPC prediction
+  horizon.
+- It failed sooner: acados status-4 appeared during the first handover, about
+  `3.8 s` after the first `gentle_arc` swap.
+
+Current conclusion:
+
+- Reference blending is directionally useful but insufficient by itself.
+- Longer blending is not automatically better; a long handover can make the
+  active horizon less dynamically coherent because it mixes two independently
+  generated flat trajectories.
+- The next serious candidate is a handover-aware acceptance check:
+  build the blended horizon, dry-run the NMPC once or over a short post-swap
+  window, and accept the MINCO swap only if that blended horizon solves.
+
+### FastPlanner-like committed-splice goal-lattice replanning
+
+Date: 2026-06-08.
+
+Motivation:
+
+- Algebraically blending two independently generated MINCO trajectories can
+  produce a reference that was never checked by the USV flatness constraints.
+- FastPlanner-style local replanning usually keeps a short committed prefix of
+  the currently executing trajectory, starts the replacement trajectory from a
+  future splice state, and swaps at that splice. That preserves start
+  continuity without mixing two dynamics-feasible references into a third,
+  unchecked reference.
+
+Implemented:
+
+- `ReferenceCommittedSwitch` in
+  `robotx_safe_docking_control/robotx_safe_docking_control/feasible_references.py`.
+- New controller/config/launch parameter:
+  `minco_commit_duration`, default `0.5 s`.
+- The default blend parameter is now `minco_handover_duration = 0.0 s`.
+- Replan logic for accepted online MINCO candidates:
+  1. Let `t_a` be the current active-reference elapsed time.
+  2. Let `T_c = minco_commit_duration`.
+  3. Sample the active reference at `t_a + T_c`.
+  4. Use that future sample as the new MINCO head boundary:
+     `z_0`, `z_dot_0`, and `z_ddot_0`.
+  5. Mark the boundary-acceleration source as `committed_reference`.
+  6. Run the USV lattice front end from the future splice state, not from the
+     current EKF sample.
+  7. Generate and validate the MINCO candidate using the existing PVA,
+     `tau_v`, velocity, acceleration, actuator, and penalty gates.
+  8. If accepted, expose an active `ReferenceCommittedSwitch`: for
+     `0 <= t < T_c`, the NMPC sees the old reference; for `t >= T_c`, the NMPC
+     sees the new MINCO reference with local time `t - T_c`.
+  9. If rejected, continue the old reference and publish zero new swap flags.
+
+The local lattice logic remains intentionally simple and map-free:
+
+- The global goal is `frontend_goal_z`.
+- A local planning goal is clipped to at most
+  `frontend_max_local_goal_distance` from the current planning state.
+- Each search expansion rolls out short feasible differential-thrust
+  primitives through the nominal WAM-V model.
+- The beam keeps the lowest-cost primitive endpoints according to distance to
+  the local goal, heading alignment, speed, control effort, and reverse-motion
+  penalty.
+- When the terminal endpoint is within `frontend_final_goal_radius` of the
+  global goal, the terminal PVA is set to the final goal with zero terminal
+  velocity and acceleration.
+- Simulated circular obstacles can be passed through `frontend_obstacles`, but
+  obstacle perception, ESDF/local maps, and front-end global planning are not
+  part of this phase.
+
+Static/unit checks:
+
+```bash
+python3 -m py_compile \
+  robotx_safe_docking_control/robotx_safe_docking_control/feasible_references.py \
+  robotx_safe_docking_control/robotx_safe_docking_control/minco_reference_generation.py \
+  robotx_safe_docking_control/robotx_safe_docking_control/flatness_mpc_controller.py \
+  robotx_safe_docking_control/launch/flatness_mpc_controller.launch.py \
+  scripts/record_flatness_mpc_performance.py
+
+PYTHONPATH=/home/zjy/vrx_docking/robotx_safe_docking_control \
+  python3 -m pytest -q \
+  robotx_safe_docking_control/test/test_reference_handover.py \
+  robotx_safe_docking_control/test/test_minco_reference_manager.py \
+  robotx_safe_docking_control/test/test_usv_lattice_frontend.py
+```
+
+Result:
+
+```text
+11 passed in 0.29s
+```
+
+Gazebo/VRX no-obstacle committed-splice smoke:
+
+- output directory:
+  `output/minco_goal_lattice_committed_splice_20260608/`
+- recorder duration: `45 s`;
+- launch:
+
+```bash
+ros2 launch robotx_safe_docking_control flatness_mpc_controller.launch.py \
+  reference_source:=minco \
+  reference_name:=goal_lattice \
+  minco_replan_enabled:=True \
+  minco_replan_period:=6.0 \
+  minco_commit_duration:=0.5 \
+  minco_handover_duration:=0.0 \
+  use_sim_time:=True
+```
+
+Recorder metrics from EKF/controller topics:
+
+| Metric | Value |
+| --- | ---: |
+| solver success fraction | `1.0` |
+| reference candidate count | `5` |
+| reference swap count | `4` |
+| rejected candidate count | `0` |
+| solver failures after swap | `0` |
+| RMS current-reference distance | `0.06896466335823079 m` |
+| final active-terminal distance | `0.20930504205068146 m` |
+| final active-terminal yaw error | `0.03272444507636263 rad` |
+| final speed | `0.10553586609735847 m/s` |
+| thrust saturation fraction | `0.0` |
+| max thrust jump at swap | `6.353486037611972 N` |
+| accepted max `abs(tau_v)` | `1.9056273067955303 N` |
+| accepted max RMS `tau_v` | `0.9419497984003662 N` |
+| mean solve time | `16.61544641186506 ms` |
+| max solve time | `35.036990069784224 ms` |
+| final distance to configured global goal `(6, 12, 2.4)` | `12.754476042421938 m` |
+
+Gazebo/VRX obstacle-enabled committed-splice smoke:
+
+- output directory:
+  `output/minco_goal_lattice_committed_splice_obstacles_20260608/`
+- simulated obstacle input: `0.65,1.25,0.25`;
+- recorder duration: `45 s`;
+- launch included the same controller parameters plus:
+
+```bash
+frontend_obstacles:="0.65,1.25,0.25"
+```
+
+Recorder metrics from EKF/controller topics:
+
+| Metric | Value |
+| --- | ---: |
+| solver success fraction | `1.0` |
+| reference candidate count | `5` |
+| reference swap count | `4` |
+| rejected candidate count | `0` |
+| solver failures after swap | `0` |
+| RMS current-reference distance | `0.13716101039371978 m` |
+| final active-terminal distance | `0.004174715658439983 m` |
+| final active-terminal yaw error | `0.0003730190109147991 rad` |
+| final speed | `0.012842387302430869 m/s` |
+| thrust saturation fraction | `0.0` |
+| max thrust jump at swap | `17.290793768694286 N` |
+| accepted max `abs(tau_v)` | `1.4581325440913289 N` |
+| accepted max RMS `tau_v` | `0.6358371042555017 N` |
+| mean solve time | `17.16002896267918 ms` |
+| max solve time | `41.564128012396395 ms` |
+| final distance to configured global goal `(6, 12, 2.4)` | `12.86817394891464 m` |
+
+The obstacle run exercised real lattice rejection: accepted candidates reported
+`frontend_collision_reject_count` between `180` and `275` primitive rollouts
+while keeping `frontend_collision_free = 1.0`. The recorder plots include the
+simulated obstacle footprint.
+
+Interpretation:
+
+- The committed-splice mechanism validates the intended handover logic:
+  accepted candidates start continuously from a future active-reference splice
+  state, `reference_boundary_accel_source = committed_reference`, and no
+  algebraic old/new reference blend is active by default.
+- The NMPC solve was stable in both 45-second validation windows:
+  solver success was `1.0`, there were no rejected candidates, no recorded
+  post-swap solver failures, and no thrust saturation.
+- The current front-end should not yet be called a strong global-goal planner.
+  It tracks local MINCO terminals well, but it makes very small global progress
+  toward `frontend_goal_z`. With an obstacle near the early route, the lattice
+  becomes especially conservative and repeatedly selects very nearby safe
+  terminals.
+- The next improvement should be front-end quality, not another reference
+  handover mechanism: add a stronger global-progress term / progress lower
+  bound, tune primitive duration and depth, add a committed global route or
+  receding waypoint queue, and report global-goal progress directly in the
+  recorder.
+
+## C++ GCOPTER-style LBFGS optimizer update
+
+Date: 2026-06-09.
+
+Implemented:
+
+- vendored GCOPTER's header-only LBFGS-Lite optimizer into
+  `robotx_safe_docking_minco_cpp`;
+- added `minco_optimize_lbfgs(...)` to the C++ MINCO extension;
+- kept the sparse outer variables unchanged: intermediate points `q` and time
+  variables `theta` only;
+- kept the polynomial coefficients generated by the existing MINCO-S3NU linear
+  system;
+- kept dense USV feasibility penalties unchanged;
+- made the Python `MincoUsvOptimizer` use the C++ LBFGS-Lite loop by default;
+- retained SciPy L-BFGS-B as an explicit fallback with
+  `ROBOTX_MINCO_OPTIMIZER_CPP=0`.
+
+Verification:
+
+```bash
+source /opt/ros/humble/setup.bash
+colcon build --packages-select robotx_safe_docking_minco_cpp robotx_safe_docking_control \
+  --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
+source install/setup.bash
+/usr/bin/python3 -m pytest -q \
+  robotx_safe_docking_control/test/test_minco_s3nu.py \
+  robotx_safe_docking_control/test/test_minco_usv_penalties.py \
+  robotx_safe_docking_control/test/test_minco_usv_optimizer.py \
+  robotx_safe_docking_control/test/test_minco_feasible_reference.py \
+  robotx_safe_docking_control/test/test_minco_adaptive_feasibility.py \
+  robotx_safe_docking_control/test/test_minco_reference_generation.py \
+  robotx_safe_docking_control/test/test_minco_offline_validation.py \
+  robotx_safe_docking_control/test/test_minco_reference_manager.py
+```
+
+Result:
+
+```text
+30 passed in 0.93s
+```
+
+SciPy fallback check:
+
+```bash
+ROBOTX_MINCO_OPTIMIZER_CPP=0 /usr/bin/python3 -m pytest -q \
+  robotx_safe_docking_control/test/test_minco_usv_optimizer.py \
+  robotx_safe_docking_control/test/test_minco_reference_generation.py \
+  robotx_safe_docking_control/test/test_minco_offline_validation.py
+```
+
+Result:
+
+```text
+6 passed in 0.60s
+```
+
+Representative timing:
+
+| Case | Backend | Success | Mean Time |
+| --- | --- | ---: | ---: |
+| 3-piece local zero-penalty | C++ LBFGS-Lite | `10/10` | `22.45 ms` |
+| 3-piece local zero-penalty | SciPy L-BFGS-B | `10/10` | `22.81 ms` |
+| 8-piece zero-penalty | C++ LBFGS-Lite | `5/5` | `85.47 ms` |
+| 8-piece zero-penalty | SciPy L-BFGS-B | `5/5` | `121.46 ms` |
+
+Notes:
+
+- The C++ loop reduces Python optimizer-loop overhead and uses fewer objective
+  evaluations on the 8-piece case.
+- A deliberately tight, heavily penalized 8-piece case still hit the iteration
+  limit for both C++ LBFGS-Lite and SciPy L-BFGS-B. This confirms that the
+  optimizer transfer helps overhead but does not by itself solve hard
+  feasibility or conditioning issues.
+
+## MINCO-topic terminal sweep with selected NMPC weights
+
+Date: 2026-06-11.
+
+The current topic-based planner/controller stack was tested with the selected
+NMPC weights:
+
+```text
+q_position = 4.0
+q_yaw = 3.0
+q_velocity = 2.0
+q_yaw_rate = 1.5
+q_terminal_position = 300.0
+q_terminal_yaw = 100.0
+q_terminal_velocity = 300.0
+q_terminal_yaw_rate = 100.0
+q_tau_u = 0.001
+q_tau_r = 0.0004
+q_delta_tau = 0.004
+q_tau_v_slack = 20.0
+tau_v_slack_max = 0.05
+```
+
+Gazebo/VRX artifacts:
+
+```text
+output/nmpc_recommended_terminal_sweep_20260611_013620/
+```
+
+| Goal `(x,y,psi)` | Final global dist (m) | Final yaw err (rad) | Active RMS pos (m) | Active RMS yaw (rad) | Solver success | Mean solve (ms) | Saturation frac | Swaps |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `(3.0, 6.0, 2.4)` | 0.074 | 0.0014 | 0.247 | 0.120 | 1.000 | 16.6 | 0.0000 | 9 |
+| `(3.0, 6.0, 1.4)` | 0.109 | 0.1081 | 0.250 | 0.098 | 1.000 | 16.9 | 0.0018 | 7 |
+| `(4.0, 5.0, 1.6)` | 0.209 | 0.0211 | 0.247 | 0.091 | 1.000 | 17.4 | 0.0018 | 8 |
+| `(2.0, 4.0, 1.2)` | 1.946 | 0.0561 | 0.086 | 0.035 | 1.000 | 17.3 | 0.0000 | 3 |
+
+Interpretation:
+
+- NMPC tracking and solver behavior are stable for accepted references:
+  `solver_success_rate = 1.0` in all four runs, and thrust saturation is near
+  zero.
+- Controller acceptance handshaking avoids the earlier issue where the planner
+  advanced before the controller actually started executing a trajectory.
+- The planner still needs work. The short-goal case tracks its active local
+  reference well but remains far from the configured global goal, which points
+  to local terminal selection and time-assignment weaknesses rather than an
+  NMPC failure.
+- Next work should improve planner terminal commitment to the global goal and
+  local-reference time assignment before more NMPC weight tuning.
+
 ## Required metrics to report after relevant phases
 
 - PVA boundary residual
@@ -991,13 +1724,14 @@ Interpretation:
 - terminal pose error
 - terminal velocity error
 
-## Non-goals for this task
+## Non-goals for the current MINCO/autonomy work
 
-- No front-end planning
-- No obstacle corridors or ESDF obstacle cost
-- No NN residual compensation
-- No replacement of the existing NMPC tracker
-- No PID fallback
+- No obstacle corridors or ESDF obstacle cost unless explicitly requested in a
+  future obstacle-aware planning task.
+- No local-map or perception integration.
+- No NN residual compensation.
+- No replacement of the existing NMPC tracker.
+- No PID fallback.
 
 ## Failure policy
 If a phase fails, Codex should make at most three focused repair attempts. Each attempt must include:

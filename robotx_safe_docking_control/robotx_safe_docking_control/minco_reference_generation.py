@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Optional
 
 import numpy as np
 
+from .feasible_references import FeasibleReference
 from .minco_feasible_reference import minco_to_feasible_reference
+from .minco_offline_validation import minco_residuals
 from .minco_usv_optimizer import MincoUsvOptimizer
 from .minco_usv_optimizer import MincoUsvOptimizerConfig
 from .minco_usv_penalties import MincoUsvPenaltyConfig
@@ -15,12 +18,22 @@ from .usv_flatness import flat_to_body_velocity
 from .usv_flatness import nominal_coriolis_times_velocity
 from .usv_flatness import nominal_damping
 
+try:
+    import robotx_minco_cpp as _minco_cpp
+except Exception:  # pragma: no cover - optional compiled runtime
+    try:
+        from . import _minco_cpp
+    except Exception:
+        _minco_cpp = None
+
 
 BOUNDARY_ACCEL_SOURCE_IDS = {
     "previous_minco": 1.0,
     "previous_mpc": 2.0,
     "last_command": 3.0,
     "zero": 4.0,
+    "active_reference": 5.0,
+    "committed_reference": 5.0,
 }
 
 
@@ -37,6 +50,7 @@ class BoundaryAccelerationSelection:
 @dataclass
 class MincoLocalReferenceConfig:
     terminal_offset_body: tuple[float, float, float] = (2.0, 0.4, 0.25)
+    terminal_z: Optional[tuple[float, float, float]] = None
     terminal_z_dot: tuple[float, float, float] = (0.0, 0.0, 0.0)
     terminal_z_ddot: tuple[float, float, float] = (0.0, 0.0, 0.0)
     dt: float = 0.1
@@ -57,6 +71,8 @@ class MincoLocalReferenceConfig:
     lambda_actuator: float = 10.0
     quadrature_order: int = 8
     penalty_mu: float = 20.0
+    initial_inPs: Optional[np.ndarray] = None
+    initial_ts: Optional[np.ndarray] = None
 
 
 @dataclass
@@ -64,6 +80,20 @@ class MincoReferenceBuildResult:
     reference: object
     optimizer_result: object
     boundary_acceleration_source: str
+
+
+@dataclass
+class CppMincoReferenceOptimizerResult:
+    success: bool
+    message: str
+    objective_before: float
+    objective_after: float
+    iterations: int
+    inPs: np.ndarray
+    ts: np.ndarray
+    theta: np.ndarray
+    trajectory: object
+    diagnostics: dict
 
 
 def nominal_flat_acceleration_from_tau(
@@ -133,18 +163,22 @@ def create_minco_local_reference(
     z_dot = np.asarray(z_dot, dtype=float).reshape(3)
     z_ddot = np.asarray(boundary_acceleration.z_ddot, dtype=float).reshape(3)
 
-    terminal_offset = np.asarray(config.terminal_offset_body, dtype=float).reshape(3)
-    c = float(np.cos(z[2]))
-    s = float(np.sin(z[2]))
-    terminal_xy = z[:2] + np.array([
-        c * terminal_offset[0] - s * terminal_offset[1],
-        s * terminal_offset[0] + c * terminal_offset[1],
-    ])
-    terminal_z = np.array([
-        terminal_xy[0],
-        terminal_xy[1],
-        z[2] + terminal_offset[2],
-    ], dtype=float)
+    if config.terminal_z is None:
+        terminal_offset = np.asarray(
+            config.terminal_offset_body, dtype=float).reshape(3)
+        c = float(np.cos(z[2]))
+        s = float(np.sin(z[2]))
+        terminal_xy = z[:2] + np.array([
+            c * terminal_offset[0] - s * terminal_offset[1],
+            s * terminal_offset[0] + c * terminal_offset[1],
+        ])
+        terminal_z = np.array([
+            terminal_xy[0],
+            terminal_xy[1],
+            z[2] + terminal_offset[2],
+        ], dtype=float)
+    else:
+        terminal_z = np.asarray(config.terminal_z, dtype=float).reshape(3)
 
     head_pva = np.vstack((z, z_dot, z_ddot))
     tail_pva = np.vstack((
@@ -178,7 +212,34 @@ def create_minco_local_reference(
             max_iterations=int(config.max_iterations),
         ),
     )
-    optimizer_result = optimizer.optimize(head_pva, tail_pva)
+    use_cpp_planner = (
+        _minco_cpp is not None and
+        hasattr(_minco_cpp, "plan_minco_reference") and
+        os.environ.get("ROBOTX_MINCO_PLAN_CPP", "1") != "0" and
+        os.environ.get("ROBOTX_MINCO_USE_CPP", "1") != "0")
+    if use_cpp_planner:
+        reference, optimizer_result = _build_cpp_minco_reference(
+            name=name,
+            optimizer=optimizer,
+            head_pva=head_pva,
+            tail_pva=tail_pva,
+            params=params,
+            config=config,
+            boundary_acceleration=boundary_acceleration,
+            z_ddot=z_ddot,
+        )
+        return MincoReferenceBuildResult(
+            reference=reference,
+            optimizer_result=optimizer_result,
+            boundary_acceleration_source=boundary_acceleration.source,
+        )
+
+    optimizer_result = optimizer.optimize(
+        head_pva,
+        tail_pva,
+        initial_inPs=config.initial_inPs,
+        initial_ts=config.initial_ts,
+    )
     if not optimizer_result.success:
         raise RuntimeError(
             "MINCO optimizer failed: " + str(optimizer_result.message)
@@ -192,6 +253,9 @@ def create_minco_local_reference(
         penalty_config=penalty_config,
         optimizer_result=optimizer_result,
     )
+    reference.diagnostics.update(
+        minco_residuals(optimizer_result.trajectory, head_pva, tail_pva)
+    )
     reference.diagnostics.update({
         "reference_source_minco": 1.0,
         "minco_boundary_acceleration_source_id": (
@@ -204,6 +268,71 @@ def create_minco_local_reference(
         optimizer_result=optimizer_result,
         boundary_acceleration_source=boundary_acceleration.source,
     )
+
+
+def _build_cpp_minco_reference(
+    name: str,
+    optimizer: MincoUsvOptimizer,
+    head_pva: np.ndarray,
+    tail_pva: np.ndarray,
+    params: UsvModelParams,
+    config: MincoLocalReferenceConfig,
+    boundary_acceleration: BoundaryAccelerationSelection,
+    z_ddot: np.ndarray,
+):
+    context = optimizer._cpp_context()
+    result = _minco_cpp.plan_minco_reference(
+        np.asarray(head_pva, dtype=float),
+        np.asarray(tail_pva, dtype=float),
+        context["params"],
+        context["optimizer"],
+        context["penalty"],
+        float(config.dt),
+        None if config.initial_inPs is None else np.asarray(
+            config.initial_inPs, dtype=float),
+        None if config.initial_ts is None else np.asarray(
+            config.initial_ts, dtype=float),
+    )
+    if not bool(result["success"]):
+        raise RuntimeError(
+            "C++ MINCO planner failed: " + str(result["message"])
+        )
+    diagnostics = {
+        key: value
+        for key, value in dict(result["diagnostics"]).items()
+    }
+    diagnostics.update({
+        "reference_source_minco": 1.0,
+        "minco_boundary_acceleration_source_id": (
+            boundary_acceleration.source_id
+        ),
+        "minco_initial_z_ddot_norm": float(np.linalg.norm(z_ddot)),
+    })
+    reference = FeasibleReference(
+        name=name,
+        t=np.asarray(result["t"], dtype=float),
+        z=np.asarray(result["z"], dtype=float),
+        z_dot=np.asarray(result["z_dot"], dtype=float),
+        z_ddot=np.asarray(result["z_ddot"], dtype=float),
+        nu=np.asarray(result["nu"], dtype=float),
+        nu_dot=np.asarray(result["nu_dot"], dtype=float),
+        tau=np.asarray(result["tau"], dtype=float),
+        thrust=np.asarray(result["thrust"], dtype=float),
+        diagnostics=diagnostics,
+    )
+    optimizer_result = CppMincoReferenceOptimizerResult(
+        success=bool(result["success"]),
+        message=str(result["message"]),
+        objective_before=float(result["objective_before"]),
+        objective_after=float(result["objective_after"]),
+        iterations=int(result["iterations"]),
+        inPs=np.asarray(result["inPs"], dtype=float),
+        ts=np.asarray(result["ts"], dtype=float),
+        theta=np.asarray(result["theta"], dtype=float),
+        trajectory=None,
+        diagnostics=diagnostics,
+    )
+    return reference, optimizer_result
 
 
 def _valid_vector(value) -> bool:

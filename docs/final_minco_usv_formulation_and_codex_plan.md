@@ -25,9 +25,14 @@ Current implementation status:
 
 - MINCO is integrated as runtime one-shot local reference generation through
   `reference_source := minco`.
-- Continuous online MINCO replanning is not implemented yet.
+- Online MINCO replanning has a no-obstacle prototype and a first
+  USV-aware `goal_lattice` local front end. It generates local terminal PVA
+  candidates for MINCO but is not yet an obstacle-aware front-end planner.
 - The active optimizer uses analytic dense-penalty gradients. Finite
   differences are retained only for tests and audit utilities.
+- The sparse outer optimization loop now uses a C++ vendored copy of
+  GCOPTER's LBFGS-Lite optimizer by default. The previous SciPy L-BFGS-B path
+  remains available only for explicit comparison/debugging.
 
 ---
 

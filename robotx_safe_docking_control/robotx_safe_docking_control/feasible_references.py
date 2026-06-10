@@ -85,6 +85,146 @@ class FeasibleReference:
         return value
 
 
+@dataclass
+class ReferenceHandover:
+    """Short old/new reference blend for online reference replacement."""
+
+    name: str
+    previous_reference: FeasibleReference
+    new_reference: FeasibleReference
+    previous_elapsed_at_swap: float
+    handover_duration: float
+
+    @property
+    def diagnostics(self) -> Dict[str, float]:
+        diagnostics = dict(self.new_reference.diagnostics)
+        diagnostics["handover_duration"] = float(self.handover_duration)
+        diagnostics["previous_elapsed_at_swap"] = float(
+            self.previous_elapsed_at_swap)
+        return diagnostics
+
+    @property
+    def duration(self) -> float:
+        return self.new_reference.duration
+
+    @property
+    def t(self) -> np.ndarray:
+        return self.new_reference.t
+
+    def blend_alpha(self, query_t: float) -> float:
+        if self.handover_duration <= 1e-9:
+            return 1.0
+        return smooth_step(float(query_t), 0.0, self.handover_duration)
+
+    def is_handover_active(self, query_t: float) -> bool:
+        return 0.0 <= float(query_t) < self.handover_duration
+
+    def sample(self, query_t: float):
+        if query_t >= self.handover_duration:
+            return self.new_reference.sample(query_t)
+        alpha = self.blend_alpha(query_t)
+        old_sample = self.previous_reference.sample(
+            self.previous_elapsed_at_swap + max(float(query_t), 0.0))
+        new_sample = self.new_reference.sample(query_t)
+        return {
+            'z': self._blend_z(old_sample['z'], new_sample['z'], alpha),
+            'z_dot': self._blend(old_sample['z_dot'], new_sample['z_dot'], alpha),
+            'z_ddot': self._blend(old_sample['z_ddot'], new_sample['z_ddot'], alpha),
+            'nu': self._blend(old_sample['nu'], new_sample['nu'], alpha),
+            'nu_dot': self._blend(old_sample['nu_dot'], new_sample['nu_dot'], alpha),
+            'tau': self._blend(old_sample['tau'], new_sample['tau'], alpha),
+            'thrust': self._blend(old_sample['thrust'], new_sample['thrust'], alpha),
+        }
+
+    def horizon(self, start_t: float, dt: float, count: int):
+        samples = [self.sample(start_t + dt * i) for i in range(count)]
+        return {
+            key: np.asarray([sample[key] for sample in samples], dtype=float)
+            for key in samples[0].keys()
+        }
+
+    def horizon_at_offsets(self, start_t: float, offsets):
+        samples = [self.sample(start_t + float(offset)) for offset in offsets]
+        return {
+            key: np.asarray([sample[key] for sample in samples], dtype=float)
+            for key in samples[0].keys()
+        }
+
+    @staticmethod
+    def _blend(a, b, alpha: float):
+        return np.asarray(a, dtype=float) + float(alpha) * (
+            np.asarray(b, dtype=float) - np.asarray(a, dtype=float))
+
+    @staticmethod
+    def _blend_z(a, b, alpha: float):
+        value = ReferenceHandover._blend(a, b, alpha)
+        value = np.asarray(value, dtype=float).copy()
+        value[2] = wrap_angle(float(
+            np.asarray(a, dtype=float)[2] +
+            float(alpha) * wrap_angle(float(
+                np.asarray(b, dtype=float)[2] -
+                np.asarray(a, dtype=float)[2]))))
+        return value
+
+
+@dataclass
+class ReferenceCommittedSwitch:
+    """Track old reference for a short committed segment, then switch.
+
+    This is closer to Fast-Planner style replanning than algebraic blending:
+    the optimizer commits to the currently active reference for a short future
+    interval, generates the new reference from that future PVA state, and then
+    switches at the splice time.
+    """
+
+    name: str
+    previous_reference: FeasibleReference
+    new_reference: FeasibleReference
+    previous_elapsed_at_swap: float
+    commit_duration: float
+
+    @property
+    def diagnostics(self) -> Dict[str, float]:
+        diagnostics = dict(self.new_reference.diagnostics)
+        diagnostics["commit_duration"] = float(self.commit_duration)
+        diagnostics["previous_elapsed_at_swap"] = float(
+            self.previous_elapsed_at_swap)
+        return diagnostics
+
+    @property
+    def duration(self) -> float:
+        return max(float(self.commit_duration), 0.0) + self.new_reference.duration
+
+    @property
+    def t(self) -> np.ndarray:
+        return self.new_reference.t + max(float(self.commit_duration), 0.0)
+
+    def is_commit_active(self, query_t: float) -> bool:
+        return 0.0 <= float(query_t) < max(float(self.commit_duration), 0.0)
+
+    def sample(self, query_t: float):
+        query_t = max(float(query_t), 0.0)
+        commit_duration = max(float(self.commit_duration), 0.0)
+        if query_t < commit_duration:
+            return self.previous_reference.sample(
+                self.previous_elapsed_at_swap + query_t)
+        return self.new_reference.sample(query_t - commit_duration)
+
+    def horizon(self, start_t: float, dt: float, count: int):
+        samples = [self.sample(start_t + dt * i) for i in range(count)]
+        return {
+            key: np.asarray([sample[key] for sample in samples], dtype=float)
+            for key in samples[0].keys()
+        }
+
+    def horizon_at_offsets(self, start_t: float, offsets):
+        samples = [self.sample(start_t + float(offset)) for offset in offsets]
+        return {
+            key: np.asarray([sample[key] for sample in samples], dtype=float)
+            for key in samples[0].keys()
+        }
+
+
 def rollout_reference(name: str, initial_z, initial_nu,
                       command_fn: Callable[[float], np.ndarray],
                       duration: float, dt: float,

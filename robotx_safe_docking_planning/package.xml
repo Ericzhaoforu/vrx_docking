@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>robotx_safe_docking_planning</name>
+  <version>0.1.0</version>
+  <description>C++ planning nodes for RobotX safe docking autonomy.</description>
+
+  <maintainer email="zjy@example.com">zjy</maintainer>
+  <license>Apache License 2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <build_depend>eigen</build_depend>
+  <build_depend>nav_msgs</build_depend>
+  <build_depend>python3-dev</build_depend>
+  <build_depend>pybind11-dev</build_depend>
+  <build_depend>rclcpp</build_depend>
+  <build_depend>robotx_safe_docking_minco_cpp</build_depend>
+  <build_depend>robotx_safe_docking_msgs</build_depend>
+
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>python3</exec_depend>
+  <exec_depend>rclcpp</exec_depend>
+  <exec_depend>robotx_safe_docking_minco_cpp</exec_depend>
+  <exec_depend>robotx_safe_docking_msgs</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
