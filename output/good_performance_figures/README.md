@@ -69,3 +69,16 @@ Goal:
 
 The `whole_framework_minco_topic/` folder contains the full plot set, including
 reference timing and body/world velocity plots.
+
+## Gazebo GUI Videos
+
+The `gazebo_videos/` folder contains compact MP4/GIF recordings with Gazebo-side
+trajectory visualization:
+
+- NMPC-only `figure8`
+- NMPC-only `spiral`
+- Full EKF + C++ MINCO replanner + minco-topic handoff + NMPC pipeline
+
+Color legend: orange is the embedded full synthetic reference, yellow is the
+active controller reference, cyan is the executed WAM-V trail, and green marks
+the whole-pipeline global goal.
